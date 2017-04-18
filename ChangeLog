@@ -1,0 +1,29 @@
+2016-11-20  Danilo Chang
+
+    * Setup version to v0.2
+    * Updade QoS parameter check
+    * receive command: add dup flag support
+
+2016-11-19  Danilo Chang
+
+    * Add isConnected command
+    * Add more SSL options
+
+2016-11-17  Danilo Chang
+
+    * Fix Windows SSL/TLS connection failed
+    * Update for enableServerCertAuth support
+
+2016-11-16  Danilo Chang
+
+    * Try to add basic SSL support
+
+2016-11-15  Danilo Chang
+
+    * Implement mqttc command
+
+2016-11-14  Danilo Chang
+
+    * Add paho.mqtt.c-1.1.0 files
+    * Dump sample extension
+
