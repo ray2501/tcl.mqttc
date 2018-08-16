@@ -1,3 +1,7 @@
+2018-08-16  Danilo Chang
+
+    * Update to paho.mqtt.c-1.2.1 files
+
 2016-11-20  Danilo Chang
 
     * Setup version to v0.2

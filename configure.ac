@@ -19,7 +19,7 @@ dnl	to configure the system for the local environment.
 # so that we create the export library with the dll.
 #-----------------------------------------------------------------------
 
-AC_INIT([mqttc], [0.2])
+AC_INIT([mqttc], [0.3])
 
 #--------------------------------------------------------------------
 # Call TEA_INIT as the first TEA_ macro to set up initial vars.
@@ -89,7 +89,7 @@ TEA_ADD_SOURCES([tclmqttc.c
     SocketBuffer.c
     Heap.c
     LinkedList.c
-    MQTTClient.c SSLSocket.c])
+    MQTTClient.c SSLSocket.c OsWrapper.c])
 TEA_ADD_HEADERS([])
 TEA_ADD_INCLUDES([])
 TEA_ADD_LIBS([])
