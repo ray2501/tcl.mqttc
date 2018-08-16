@@ -20,7 +20,7 @@ BuildRoot:     %{buildroot}
 MQTT Client for Tcl, based on Paho MQTT C Client for Posix and Windows.
 
 %prep
-%setup -q -n %{name}
+%setup -q -n %{name}-%{version}
 
 %build
 ./configure \
