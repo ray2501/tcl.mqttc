@@ -72,6 +72,11 @@ TEA_SETUP_COMPILER
 #-----------------------------------------------------------------------
 
 TEA_ADD_SOURCES([tclmqttc.c
+    Base64.c
+    MQTTProperties.c
+    MQTTReasonCodes.c
+    SHA1.c
+    WebSocket.c
     MQTTProtocolClient.c
     Clients.c
     utf-8.c

@@ -33,8 +33,8 @@
 # $(srcdir) or in the generic, win or unix subdirectory.
 #========================================================================
 
-PKG_SOURCES	=  tclmqttc.c MQTTProtocolClient.c Clients.c utf-8.c StackTrace.c MQTTPacket.c MQTTPacketOut.c Messages.c Tree.c Socket.c Log.c MQTTPersistence.c Thread.c MQTTProtocolOut.c MQTTPersistenceDefault.c SocketBuffer.c Heap.c LinkedList.c MQTTClient.c SSLSocket.c OsWrapper.c
-PKG_OBJECTS	=  tclmqttc.o MQTTProtocolClient.o Clients.o utf-8.o StackTrace.o MQTTPacket.o MQTTPacketOut.o Messages.o Tree.o Socket.o Log.o MQTTPersistence.o Thread.o MQTTProtocolOut.o MQTTPersistenceDefault.o SocketBuffer.o Heap.o LinkedList.o MQTTClient.o SSLSocket.o OsWrapper.o
+PKG_SOURCES	=  tclmqttc.c Base64.c MQTTProperties.c MQTTReasonCodes.c SHA1.c WebSocket.c MQTTProtocolClient.c Clients.c utf-8.c StackTrace.c MQTTPacket.c MQTTPacketOut.c Messages.c Tree.c Socket.c Log.c MQTTPersistence.c Thread.c MQTTProtocolOut.c MQTTPersistenceDefault.c SocketBuffer.c Heap.c LinkedList.c MQTTClient.c SSLSocket.c OsWrapper.c
+PKG_OBJECTS	=  tclmqttc.o Base64.o MQTTProperties.o MQTTReasonCodes.o SHA1.o WebSocket.o MQTTProtocolClient.o Clients.o utf-8.o StackTrace.o MQTTPacket.o MQTTPacketOut.o Messages.o Tree.o Socket.o Log.o MQTTPersistence.o Thread.o MQTTProtocolOut.o MQTTPersistenceDefault.o SocketBuffer.o Heap.o LinkedList.o MQTTClient.o SSLSocket.o OsWrapper.o
 
 PKG_STUB_SOURCES = 
 PKG_STUB_OBJECTS = 
