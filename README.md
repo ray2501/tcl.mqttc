@@ -68,7 +68,7 @@ below is an example:
 Commands
 =====
 
-mqttc HANDLE serverURI clientId persistence_type ?-timeout timeout? ?-keepalive keepalive? ?-cleansession cleansession? ?-username username? ?-password password? ?-sslenable boolean? ?-trustStore truststore? ?-keyStore keystore? ?-privateKey privatekey? ?-privateKeyPassword password? ?-enableServerCertAuth boolean?  
+mqttc HANDLE serverURI clientId persistence_type ?-timeout timeout? ?-keepalive keepalive? ?-cleansession cleansession? ?-username username? ?-password password? ?-sslenable boolean? ?-trustStore truststore? ?-keyStore keystore? ?-privateKey privatekey? ?-privateKeyPassword password? ?-enableServerCertAuth boolean? ?-version version?  
 HANDLE isConnected  
 HANDLE publishMessage topic payload QoS retained  
 HANDLE subscribe topic QoS   

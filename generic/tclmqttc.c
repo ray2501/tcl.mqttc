@@ -271,6 +271,7 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
   int timeout = 1000;
   int cleansession = 1;
   int keepalive = 20;
+  char *version = NULL;
   char *username = NULL;
   char *password = NULL;
   int sslenable = 0;
@@ -279,6 +280,7 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
   char *privateKey = NULL;
   char *privateKeyPassword = NULL;
   int enableServerCertAuth = 0;
+  MQTTClient_createOptions createOpts = MQTTClient_createOptions_initializer;
   MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
   MQTTClient_SSLOptions ssl_opts = MQTTClient_SSLOptions_initializer;
   int i, rc;
@@ -291,7 +293,7 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
       "?-username username? ?-password password? ?-sslenable boolean? "
       "?-trustStore truststore? ?-keyStore keystore? "
       "?-privateKey privatekey? ?-privateKeyPassword password? "
-      "?-enableServerCertAuth boolean? "
+      "?-enableServerCertAuth boolean? ?-version version? "
     );
     return TCL_ERROR;
   }
@@ -349,6 +351,8 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
         privateKeyPassword = Tcl_GetStringFromObj(objv[i + 1], 0);
     } else if( strcmp(zArg, "-enableServerCertAuth")==0 ){
         if( Tcl_GetBooleanFromObj(interp, objv[i+1], &enableServerCertAuth) ) return TCL_ERROR;
+    } else if( strcmp(zArg, "-version")==0 ){
+        version = Tcl_GetStringFromObj(objv[i + 1], 0);
     } else {
       Tcl_AppendResult(interp, "unknown option: ", zArg, (char*)0);
       return TCL_ERROR;
@@ -369,6 +373,19 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
     return TCL_ERROR;
   }
 
+  // Check version setting
+  if(version != NULL) {
+      if(strcmp(version, "3.1")==0) {
+          createOpts.MQTTVersion = MQTTVERSION_3_1;
+      } else if(strcmp(version, "3.1.1")==0) {
+          createOpts.MQTTVersion = MQTTVERSION_3_1_1;
+      } else if(strcmp(version, "5")==0) {
+          createOpts.MQTTVersion = MQTTVERSION_5;
+      } else {
+          createOpts.MQTTVersion = MQTTVERSION_DEFAULT;
+      }
+  }
+
   p = (MQTTCDATA *)Tcl_Alloc( sizeof(*p) );
   if( p==0 ){
     Tcl_SetResult(interp, (char *)"malloc failed", TCL_STATIC);
@@ -377,7 +394,15 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
 
   memset(p, 0, sizeof(*p));
 
-  MQTTClient_create(&(p->client), serverURI, clientId, persistence_type, NULL);
+  rc = MQTTClient_createWithOptions(&(p->client), serverURI, clientId, persistence_type, 
+		  NULL, &createOpts);
+  if (rc != MQTTCLIENT_SUCCESS) {
+      printf("return value %d\n", rc);
+      Tcl_SetResult (interp, "Create MQTT client fail", NULL);
+
+      if(p) Tcl_Free((char*) p);
+      return TCL_ERROR;
+  }
 
   conn_opts.keepAliveInterval = keepalive;
   conn_opts.cleansession = cleansession;
