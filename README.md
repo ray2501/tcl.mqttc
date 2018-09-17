@@ -80,7 +80,8 @@ The interface to the Paho MQTT C Client library consists of single tcl command
 named `mqttc`. Once a MQTT broker connection is created, it can be controlled
 using methods of the HANDLE command.
 
-server connection URLs should be in the form: `(tcp|ssl)://hostname:port`.
+server connection URLs should be in the form: `(tcp|ssl|ws)://hostname:port`.
+(Note: Support Websocket after version v0.4)
 
 `serverURI` is specifying the server to which the client will connect.
 `clientId` is the client identifier passed to the server when the client connects to it.
