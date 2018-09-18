@@ -127,10 +127,38 @@ Publish:
     client publishMessage "MQTT Examples" "Exit" 1 0
     client close
 
+Publish (MQTT 5):
+
+    package require mqttc
+    mqttc client "tcp://localhost:1883" "USERSPub" 1 -timeout 1000 -version "5"
+    client publishMessage "MQTT Examples" "Hello MQTT!" 1 0
+    client publishMessage "MQTT Examples" "Exit" 1 0
+    client close
+
 Subscribe:
 
     package require mqttc
     mqttc client "tcp://localhost:1883" "USERSSub" 1 -cleansession 1 
+    client subscribe  "MQTT Examples" 1
+    while 1 {
+        if {[catch {set result [client  receive]}]} {
+            puts "Receive error!!!"
+            break
+        }
+        if {[llength $result] > 0} {
+            puts "[lindex $result 0] - [lindex $result 1]"
+            if {![string compare -nocase [lindex $result 1] "Exit"]} {
+                break
+            }
+        }
+    }
+    client unsubscribe  "MQTT Examples"
+    client close
+
+Subscribe (MQTT 5):
+
+    package require mqttc
+    mqttc client "tcp://localhost:1883" "USERSSub" 1 -cleanstart 1 -version "5"
     client subscribe  "MQTT Examples" 1
     while 1 {
         if {[catch {set result [client  receive]}]} {
