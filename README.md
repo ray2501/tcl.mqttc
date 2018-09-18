@@ -68,7 +68,7 @@ below is an example:
 Commands
 =====
 
-mqttc HANDLE serverURI clientId persistence_type ?-timeout timeout? ?-keepalive keepalive? ?-cleansession cleansession? ?-username username? ?-password password? ?-sslenable boolean? ?-trustStore truststore? ?-keyStore keystore? ?-privateKey privatekey? ?-privateKeyPassword password? ?-enableServerCertAuth boolean? ?-version version?  
+mqttc HANDLE serverURI clientId persistence_type ?-timeout timeout? ?-keepalive keepalive? ?-cleansession boolean? ?-cleanstart boolean? ?-username username? ?-password password? ?-sslenable boolean? ?-trustStore truststore? ?-keyStore keystore? ?-privateKey privatekey? ?-privateKeyPassword password? ?-enableServerCertAuth boolean? ?-session-expiry-interval value? ?-version version?  
 HANDLE isConnected  
 HANDLE publishMessage topic payload QoS retained  
 HANDLE subscribe topic QoS   
@@ -88,10 +88,17 @@ server connection URLs should be in the form: `(tcp|ssl|ws)://hostname:port`.
 `persistence_type` is used by the client. 1 is using in-memory persistence.
 0 is using the default (file system-based) persistence mechanism.
 
+`-cleansession` is for MQTT 3.1/3.1.1, and `-cleanstart` is for MQTT 5.
+
 `-trustStore` is specifying the file in PEM format containing the public digital
 certificates trusted by the client. `-enableServerCertAuth` is an option to enable
 verification of the server certificate. If -enableServerCertAuth flag setup to 1,
 user needs setup the PEM format file path by using `-trustStore`.
+
+`-session-expiry-interval` is for MQTT 5 protocol.
+
+`-version' is specifying the protocol version, you can specify 3.1, 3.1.1 or 5,
+or just setup to 0.
 
 Sub command `publishMessage` QoSs parameter is he quality of service (QoS)
 assigned to the message.

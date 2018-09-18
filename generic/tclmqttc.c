@@ -32,6 +32,7 @@ extern DLLEXPORT int	Mqttc_Init(Tcl_Interp * interp);
  */
 struct MQTTCDATA {
     MQTTClient   client;
+    int          version;
     Tcl_Interp   *interp;
     char         *clientId;
     int          timeout;
@@ -44,7 +45,12 @@ static void DbDeleteCmd(void *db) {
   MQTTCDATA *pDb = (MQTTCDATA *)db;
 
   if(pDb) {
-      MQTTClient_disconnect(pDb->client, pDb->timeout);
+      if(pDb->version == MQTTVERSION_5) {
+          MQTTClient_disconnect5(pDb->client, pDb->timeout, MQTTREASONCODE_SUCCESS, NULL);
+      } else {
+          MQTTClient_disconnect(pDb->client, pDb->timeout);
+      }
+
       MQTTClient_destroy(&(pDb->client));
 
       Tcl_Free((char*)pDb);
@@ -143,7 +149,15 @@ static int MgttObjCmd(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
       pubmsg.payloadlen = strlen(payload);
       pubmsg.qos = qos;
       pubmsg.retained = retained;
-      MQTTClient_publishMessage(pMqtt->client, topic, &pubmsg, &token);
+
+      if(pMqtt->version == MQTTVERSION_5) {
+          MQTTResponse response = MQTTResponse_initializer;
+          response = MQTTClient_publishMessage5(pMqtt->client, topic, &pubmsg, &token);
+          rc = response.reasonCode;
+          MQTTResponse_free(response);
+      } else {
+          MQTTClient_publishMessage(pMqtt->client, topic, &pubmsg, &token);
+      }
       rc = MQTTClient_waitForCompletion(pMqtt->client, token, pMqtt->timeout);
       if(rc == MQTTCLIENT_SUCCESS) {
           // Return the token value
@@ -160,7 +174,7 @@ static int MgttObjCmd(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
       int qos = 1;
       int rc;
 
-      if( objc != 4 ){
+      if( objc !=4) {
         Tcl_WrongNumArgs(interp, 2, objv, "topic QoS ");
 
         return TCL_ERROR;
@@ -176,7 +190,15 @@ static int MgttObjCmd(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
           return TCL_ERROR;
       }
 
-      rc = MQTTClient_subscribe(pMqtt->client, topic, qos);
+      if(pMqtt->version == MQTTVERSION_5) {
+          MQTTResponse response = MQTTResponse_initializer;
+          response = MQTTClient_subscribe5(pMqtt->client, topic, qos, NULL, NULL);
+          rc = response.reasonCode;
+          MQTTResponse_free(response);
+      } else {
+          rc = MQTTClient_subscribe(pMqtt->client, topic, qos);
+      }
+
       if(rc == MQTTCLIENT_SUCCESS) {
           Tcl_SetObjResult(interp, Tcl_NewBooleanObj(1));
       } else {
@@ -198,7 +220,15 @@ static int MgttObjCmd(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
 
       topic = Tcl_GetStringFromObj(objv[2], 0);
 
-      rc = MQTTClient_unsubscribe(pMqtt->client, topic);
+      if(pMqtt->version == MQTTVERSION_5) {
+          MQTTResponse response = MQTTResponse_initializer;
+          response = MQTTClient_unsubscribe5(pMqtt->client, topic, NULL);
+          rc = response.reasonCode;
+	  MQTTResponse_free(response);
+      } else {
+          rc = MQTTClient_unsubscribe(pMqtt->client, topic);
+      }
+
       if(rc == MQTTCLIENT_SUCCESS) {
           Tcl_SetObjResult(interp, Tcl_NewBooleanObj(1));
       } else {
@@ -270,6 +300,7 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
   int persistence_type = MQTTCLIENT_PERSISTENCE_ERROR;
   int timeout = 1000;
   int cleansession = 1;
+  int cleanstart = 1;
   int keepalive = 20;
   char *version = NULL;
   char *username = NULL;
@@ -283,17 +314,21 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
   MQTTClient_createOptions createOpts = MQTTClient_createOptions_initializer;
   MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
   MQTTClient_SSLOptions ssl_opts = MQTTClient_SSLOptions_initializer;
+  MQTTProperties connect_props = MQTTProperties_initializer;
+  MQTTProperty property;
+  int interval = -1;
   int i, rc;
   int length;
 
   if( objc < 5 ||  (objc&1) != 1){
     Tcl_WrongNumArgs(interp, 1, objv,
       "HANDLE serverURI clientId persistence_type ?-timeout timeout? "
-      "?-cleansession cleansession? ?-keepalive keepalive? "
+      "?-cleansession boolean? ?-cleanstart boolean? ?-keepalive keepalive? "
       "?-username username? ?-password password? ?-sslenable boolean? "
       "?-trustStore truststore? ?-keyStore keystore? "
       "?-privateKey privatekey? ?-privateKeyPassword password? "
-      "?-enableServerCertAuth boolean? ?-version version? "
+      "?-enableServerCertAuth boolean? ?-session-expiry-interval value? "
+      "?-version version? "
     );
     return TCL_ERROR;
   }
@@ -313,7 +348,7 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
   for(i=5; i+1<objc; i+=2){
     zArg = Tcl_GetStringFromObj(objv[i], 0);
 
-     if( strcmp(zArg, "-timeout")==0 ){
+    if( strcmp(zArg, "-timeout")==0 ){
         if(Tcl_GetIntFromObj(interp, objv[i + 1], &timeout) != TCL_OK) {
             return TCL_ERROR;
         }
@@ -322,7 +357,7 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
             Tcl_AppendResult(interp, "timeout must be > 0", (char*)0);
             return TCL_ERROR;
         }
-     } else if( strcmp(zArg, "-keepalive")==0 ){
+    } else if( strcmp(zArg, "-keepalive")==0 ){
         if(Tcl_GetIntFromObj(interp, objv[i + 1], &keepalive) != TCL_OK) {
             return TCL_ERROR;
         }
@@ -331,10 +366,14 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
             Tcl_AppendResult(interp, "keepalive must be > 0", (char*)0);
             return TCL_ERROR;
         }
-     } else if( strcmp(zArg, "-cleansession")==0 ){
+    } else if( strcmp(zArg, "-cleansession")==0 ){
         if(Tcl_GetBooleanFromObj(interp, objv[i + 1], &cleansession) != TCL_OK) {
             return TCL_ERROR;
         }
+    } else if( strcmp(zArg, "-cleanstart")==0 ){
+        if(Tcl_GetBooleanFromObj(interp, objv[i + 1], &cleanstart) != TCL_OK) {
+            return TCL_ERROR;
+	}
     } else if( strcmp(zArg, "-username")==0 ){
         username = Tcl_GetStringFromObj(objv[i + 1], 0);
     } else if( strcmp(zArg, "-password")==0 ){
@@ -351,6 +390,15 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
         privateKeyPassword = Tcl_GetStringFromObj(objv[i + 1], 0);
     } else if( strcmp(zArg, "-enableServerCertAuth")==0 ){
         if( Tcl_GetBooleanFromObj(interp, objv[i+1], &enableServerCertAuth) ) return TCL_ERROR;
+    } else if( strcmp(zArg, "-session-expiry-interval")==0 ) {
+        if(Tcl_GetIntFromObj(interp, objv[i + 1], &interval) != TCL_OK) {
+            return TCL_ERROR;
+        }
+
+        if(interval < 0) {
+            Tcl_AppendResult(interp, "interval must be >= 0", (char*)0);
+            return TCL_ERROR;
+        }
     } else if( strcmp(zArg, "-version")==0 ){
         version = Tcl_GetStringFromObj(objv[i + 1], 0);
     } else {
@@ -404,10 +452,14 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
       return TCL_ERROR;
   }
 
+  if(createOpts.MQTTVersion==MQTTVERSION_5) {
+      MQTTClient_connectOptions conn_opts5 = MQTTClient_connectOptions_initializer5;
+      conn_opts = conn_opts5;
+  }
   conn_opts.keepAliveInterval = keepalive;
-  conn_opts.cleansession = cleansession;
   if(username) conn_opts.username = username;
   if(password) conn_opts.password = password;
+  if(version) conn_opts.MQTTVersion = createOpts.MQTTVersion;
 
   if(sslenable) {
       if(trustStore) ssl_opts.trustStore = trustStore;
@@ -418,7 +470,27 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
       conn_opts.ssl = &ssl_opts;
   }
 
-  if ((rc = MQTTClient_connect(p->client, &conn_opts)) != MQTTCLIENT_SUCCESS)
+  if (createOpts.MQTTVersion == MQTTVERSION_5)
+  {
+      MQTTResponse response = MQTTResponse_initializer;
+      conn_opts.cleanstart = cleanstart;
+
+      if(interval >= 0) {
+          property.identifier = MQTTPROPERTY_CODE_SESSION_EXPIRY_INTERVAL;
+          property.value.integer4 = interval;
+          MQTTProperties_add(&connect_props, &property);
+      }
+
+      response = MQTTClient_connect5(p->client, &conn_opts, &connect_props, NULL);
+      rc = response.reasonCode;
+      MQTTResponse_free(response);
+  } else {
+      conn_opts.cleansession = cleansession;
+
+      rc = MQTTClient_connect(p->client, &conn_opts);
+  }
+
+  if (rc != MQTTCLIENT_SUCCESS)
   {
       printf("return value %d\n", rc);
       Tcl_SetResult (interp, "Connect MQTT server fail", NULL);
@@ -428,6 +500,7 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
   }
 
   p->interp = interp;
+  p->version = createOpts.MQTTVersion;
   p->clientId = clientId;
   p->timeout = timeout;
 
