@@ -97,7 +97,7 @@ user needs setup the PEM format file path by using `-trustStore`.
 
 `-session-expiry-interval` is for MQTT 5 protocol.
 
-`-version' is specifying the protocol version, you can specify 3.1, 3.1.1 or 5,
+`-version` is specifying the protocol version, you can specify 3.1, 3.1.1 or 5,
 or just setup to 0.
 
 Sub command `publishMessage` QoSs parameter is he quality of service (QoS)

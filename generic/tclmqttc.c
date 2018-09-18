@@ -224,7 +224,7 @@ static int MgttObjCmd(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
           MQTTResponse response = MQTTResponse_initializer;
           response = MQTTClient_unsubscribe5(pMqtt->client, topic, NULL);
           rc = response.reasonCode;
-	  MQTTResponse_free(response);
+          MQTTResponse_free(response);
       } else {
           rc = MQTTClient_unsubscribe(pMqtt->client, topic);
       }
@@ -373,7 +373,7 @@ static int MQTTC_MAIN(void *cd, Tcl_Interp *interp, int objc,Tcl_Obj *const*objv
     } else if( strcmp(zArg, "-cleanstart")==0 ){
         if(Tcl_GetBooleanFromObj(interp, objv[i + 1], &cleanstart) != TCL_OK) {
             return TCL_ERROR;
-	}
+        }
     } else if( strcmp(zArg, "-username")==0 ){
         username = Tcl_GetStringFromObj(objv[i + 1], 0);
     } else if( strcmp(zArg, "-password")==0 ){
