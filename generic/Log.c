@@ -2,12 +2,12 @@
  * Copyright (c) 2009, 2018 IBM Corp.
  *
  * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
- * and Eclipse Distribution License v1.0 which accompany this distribution. 
+ * are made available under the terms of the Eclipse Public License v2.0
+ * and Eclipse Distribution License v1.0 which accompany this distribution.
  *
- * The Eclipse Public License is available at 
- *    http://www.eclipse.org/legal/epl-v10.html
- * and the Eclipse Distribution License is available at 
+ * The Eclipse Public License is available at
+ *    https://www.eclipse.org/legal/epl-2.0/
+ * and the Eclipse Distribution License is available at
  *   http://www.eclipse.org/org/documents/edl-v10.php.
  *
  * Contributors:
@@ -20,7 +20,7 @@
  * @file
  * \brief Logging and tracing module
  *
- * 
+ *
  */
 
 #include "Log.h"
@@ -38,7 +38,7 @@
 #include <time.h>
 #include <string.h>
 
-#if !defined(WIN32) && !defined(WIN64)
+#if !defined(_WIN32) && !defined(_WIN64)
 #include <syslog.h>
 #include <sys/stat.h>
 #define GETTIMEOFDAY 1
@@ -52,7 +52,7 @@
 	#include <sys/timeb.h>
 #endif
 
-#if !defined(WIN32) && !defined(WIN64)
+#if !defined(_WIN32) && !defined(_WIN64)
 /**
  * _unlink mapping for linux
  */
@@ -121,7 +121,7 @@ struct timeb ts, last_ts;
 #endif
 static char msg_buf[512];
 
-#if defined(WIN32) || defined(WIN64)
+#if defined(_WIN32) || defined(_WIN64)
 mutex_type log_mutex;
 #else
 static pthread_mutex_t log_mutex_store = PTHREAD_MUTEX_INITIALIZER;
@@ -131,11 +131,14 @@ static mutex_type log_mutex = &log_mutex_store;
 
 int Log_initialize(Log_nameValue* info)
 {
-	int rc = -1;
+	int rc = SOCKET_ERROR;
 	char* envval = NULL;
+#if !defined(_WIN32) && !defined(_WIN64)
+	struct stat buf;
+#endif
 
 	if ((trace_queue = malloc(sizeof(traceEntry) * trace_settings.max_trace_entries)) == NULL)
-		return rc;
+		goto exit;
 	trace_queue_size = trace_settings.max_trace_entries;
 
 	if ((envval = getenv("MQTT_C_CLIENT_TRACE")) != NULL && strlen(envval) > 0)
@@ -144,9 +147,18 @@ int Log_initialize(Log_nameValue* info)
 			trace_destination = stdout;
 		else
 		{
-			trace_destination_name = malloc(strlen(envval) + 1);
+			if ((trace_destination_name = malloc(strlen(envval) + 1)) == NULL)
+			{
+				free(trace_queue);
+				goto exit;
+			}
 			strcpy(trace_destination_name, envval);
-			trace_destination_backup_name = malloc(strlen(envval) + 3);
+			if ((trace_destination_backup_name = malloc(strlen(envval) + 3)) == NULL)
+			{
+				free(trace_queue);
+				free(trace_destination_name);
+				goto exit;
+			}
 			sprintf(trace_destination_backup_name, "%s.0", trace_destination_name);
 		}
 	}
@@ -180,16 +192,15 @@ int Log_initialize(Log_nameValue* info)
 			info++;
 		}
 	}
-#if !defined(WIN32) && !defined(WIN64)
-	struct stat buf;
+#if !defined(_WIN32) && !defined(_WIN64)
 	if (stat("/proc/version", &buf) != -1)
 	{
 		FILE* vfile;
-		
+
 		if ((vfile = fopen("/proc/version", "r")) != NULL)
 		{
 			int len;
-			
+
 			strcpy(msg_buf, "/proc/version: ");
 			len = strlen(msg_buf);
 			if (fgets(&msg_buf[len], sizeof(msg_buf) - len, vfile))
@@ -199,7 +210,7 @@ int Log_initialize(Log_nameValue* info)
 	}
 #endif
 	Log_output(TRACE_MINIMUM, "=========================================================");
-		
+exit:
 	return rc;
 }
 
@@ -268,6 +279,8 @@ static traceEntry* Log_pretrace(void)
 	{
 		traceEntry* new_trace_queue = malloc(sizeof(traceEntry) * trace_settings.max_trace_entries);
 
+		if (new_trace_queue == NULL)
+			goto exit;
 		memcpy(new_trace_queue, trace_queue, min(trace_queue_size, trace_settings.max_trace_entries) * sizeof(traceEntry));
 		free(trace_queue);
 		trace_queue = new_trace_queue;
@@ -291,7 +304,7 @@ static traceEntry* Log_pretrace(void)
 		start_index = 0;
 	if (++next_index == trace_settings.max_trace_entries)
 		next_index = 0;
-
+exit:
 	return cur_entry;
 }
 
@@ -339,9 +352,9 @@ static void Log_output(enum LOG_LEVELS log_level, const char *msg)
 		fprintf(trace_destination, "%s\n", msg);
 
 		if (trace_destination != stdout && ++lines_written >= max_lines_per_file)
-		{	
+		{
 
-			fclose(trace_destination);		
+			fclose(trace_destination);
 			_unlink(trace_destination_backup_name); /* remove any old backup trace file */
 			rename(trace_destination_name, trace_destination_backup_name); /* rename recently closed to backup */
 			trace_destination = fopen(trace_destination_name, "w"); /* open new trace file */
@@ -352,7 +365,7 @@ static void Log_output(enum LOG_LEVELS log_level, const char *msg)
 		else
 			fflush(trace_destination);
 	}
-		
+
 	if (trace_callback)
 		(*trace_callback)(log_level, msg);
 }
@@ -363,10 +376,10 @@ static void Log_posttrace(enum LOG_LEVELS log_level, traceEntry* cur_entry)
 	if (((trace_output_level == -1) ? log_level >= trace_settings.trace_level : log_level >= trace_output_level))
 	{
 		char* msg = NULL;
-		
+
 		if (trace_destination || trace_callback)
 			msg = &Log_formatTraceEntry(cur_entry)[7];
-		
+
 		Log_output(log_level, msg);
 	}
 }
@@ -409,7 +422,7 @@ void Log(enum LOG_LEVELS log_level, int msgno, const char *format, ...)
 		va_list args;
 
 		/* we're using a static character buffer, so we need to make sure only one thread uses it at a time */
-		Thread_lock_mutex(log_mutex); 
+		Thread_lock_mutex(log_mutex);
 		if (format == NULL && (temp = Messages_get(msgno, log_level)) != NULL)
 			format = temp;
 
@@ -418,7 +431,7 @@ void Log(enum LOG_LEVELS log_level, int msgno, const char *format, ...)
 
 		Log_trace(log_level, msg_buf);
 		va_end(args);
-		Thread_unlock_mutex(log_mutex); 
+		Thread_unlock_mutex(log_mutex);
 	}
 }
 

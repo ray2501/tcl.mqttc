@@ -1,12 +1,12 @@
 /*******************************************************************************
- * Copyright (c) 2009, 2019 IBM Corp.
+ * Copyright (c) 2009, 2020 IBM Corp.
  *
  * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v1.0
+ * are made available under the terms of the Eclipse Public License v2.0
  * and Eclipse Distribution License v1.0 which accompany this distribution. 
  *
  * The Eclipse Public License is available at 
- *    http://www.eclipse.org/legal/epl-v10.html
+ *    https://www.eclipse.org/legal/epl-2.0/
  * and the Eclipse Distribution License is available at 
  *   http://www.eclipse.org/org/documents/edl-v10.php.
  *
@@ -33,6 +33,7 @@
 #include "Messages.h"
 #include "StackTrace.h"
 #include "WebSocket.h"
+#include "MQTTTime.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -91,7 +92,7 @@ pf new_packets[] =
 
 
 static char* readUTFlen(char** pptr, char* enddata, int* len);
-static int MQTTPacket_send_ack(int type, int msgid, int dup, networkHandles *net);
+static int MQTTPacket_send_ack(int MQTTVersion, int type, int msgid, int dup, networkHandles *net);
 
 /**
  * Reads one MQTT packet from a socket.
@@ -149,6 +150,12 @@ void* MQTTPacket_Factory(int MQTTVersion, networkHandles* net, int* error)
 			{
 				int buf0len;
 				char *buf = malloc(10);
+
+				if (buf == NULL)
+				{
+					*error = SOCKET_ERROR;
+					goto exit;
+				}
 				buf[0] = header.byte;
 				buf0len = 1 + MQTTPacket_encode(&buf[1], remaining_length);
 				*error = MQTTPersistence_put(net->socket, buf, buf0len, 1,
@@ -159,7 +166,7 @@ void* MQTTPacket_Factory(int MQTTVersion, networkHandles* net, int* error)
 		}
 	}
 	if (pack)
-		time(&(net->lastReceived));
+		net->lastReceived = MQTTTime_now();
 exit:
 	FUNC_EXIT_RC(*error);
 	return pack;
@@ -178,22 +185,20 @@ exit:
 int MQTTPacket_send(networkHandles* net, Header header, char* buffer, size_t buflen, int freeData,
 		int MQTTVersion)
 {
-	int rc;
+	int rc = SOCKET_ERROR;
 	size_t buf0len;
-	size_t ws_header;
 	char *buf;
-	int count = 0;
 
 	FUNC_ENTRY;
-	ws_header = WebSocket_calculateFrameHeaderSize(net, 1, buflen + 10);
-
-	buf = malloc(10 + ws_header);
-	if ( !buf ) return -1;
-	buf[ws_header] = header.byte;
-	buf0len = 1 + MQTTPacket_encode(&buf[ws_header + 1], buflen);
-
-	if (buffer != NULL)
-		count = 1;
+	buf0len = 1 + MQTTPacket_encode(NULL, buflen);
+	buf = malloc(buf0len);
+	if (buf == NULL)
+	{
+		rc = SOCKET_ERROR;
+		goto exit;
+	}
+	buf[0] = header.byte;
+	MQTTPacket_encode(&buf[1], buflen);
 
 #if !defined(NO_PERSISTENCE)
 	if (header.bits.type == PUBREL)
@@ -201,18 +206,19 @@ int MQTTPacket_send(networkHandles* net, Header header, char* buffer, size_t buf
 		char* ptraux = buffer;
 		int msgId = readInt(&ptraux);
 
-		rc = MQTTPersistence_put(net->socket, &buf[ws_header], buf0len, count, &buffer, &buflen,
+		rc = MQTTPersistence_put(net->socket, buf, buf0len, 1, &buffer, &buflen,
 			header.bits.type, msgId, 0, MQTTVersion);
 	}
 #endif
-	rc = WebSocket_putdatas(net, &buf[ws_header], buf0len, count, &buffer, &buflen, &freeData);
+	rc = WebSocket_putdatas(net, &buf, &buf0len, 1, &buffer, &buflen, &freeData);
 
 	if (rc == TCPSOCKET_COMPLETE)
-		time(&(net->lastSent));
+		net->lastSent = MQTTTime_now();
 	
 	if (rc != TCPSOCKET_INTERRUPTED)
 	  free(buf);
 
+exit:
 	FUNC_EXIT_RC(rc);
 	return rc;
 }
@@ -231,38 +237,40 @@ int MQTTPacket_send(networkHandles* net, Header header, char* buffer, size_t buf
 int MQTTPacket_sends(networkHandles* net, Header header, int count, char** buffers, size_t* buflens,
 		int* frees, int MQTTVersion)
 {
-	int i, rc;
+	int i, rc = SOCKET_ERROR;
 	size_t buf0len, total = 0;
-	size_t ws_header;
 	char *buf;
 
 	FUNC_ENTRY;
-
 	for (i = 0; i < count; i++)
 		total += buflens[i];
+	buf0len = 1 + MQTTPacket_encode(NULL, total);
+	buf = malloc(buf0len);
+	if (buf == NULL)
+	{
+		rc = SOCKET_ERROR;
+		goto exit;
+	}
+	buf[0] = header.byte;
+	MQTTPacket_encode(&buf[1], total);
 
-	ws_header = WebSocket_calculateFrameHeaderSize(net, 1, total + 10);
-	buf = malloc(10 + ws_header);
-	if ( !buf ) return -1;
-
-	buf[ws_header] = header.byte;
-	buf0len = 1 + MQTTPacket_encode(&buf[ws_header + 1], total);
 #if !defined(NO_PERSISTENCE)
 	if (header.bits.type == PUBLISH && header.bits.qos != 0)
 	{   /* persist PUBLISH QoS1 and Qo2 */
 		char *ptraux = buffers[2];
 		int msgId = readInt(&ptraux);
-		rc = MQTTPersistence_put(net->socket, &buf[ws_header], buf0len, count, buffers, buflens,
+		rc = MQTTPersistence_put(net->socket, buf, buf0len, count, buffers, buflens,
 			header.bits.type, msgId, 0, MQTTVersion);
 	}
 #endif
-	rc = WebSocket_putdatas(net, &buf[ws_header], buf0len, count, buffers, buflens, frees);
+	rc = WebSocket_putdatas(net, &buf, &buf0len, count, buffers, buflens, frees);
 
 	if (rc == TCPSOCKET_COMPLETE)
-		time(&(net->lastSent));
+		net->lastSent = MQTTTime_now();
 	
 	if (rc != TCPSOCKET_INTERRUPTED)
 	  free(buf);
+exit:
 	FUNC_EXIT_RC(rc);
 	return rc;
 }
@@ -286,7 +294,10 @@ int MQTTPacket_encode(char* buf, size_t length)
 		/* if there are more digits to encode, set the top bit of this digit */
 		if (length > 0)
 			d |= 0x80;
-		buf[rc++] = d;
+		if (buf)
+			buf[rc++] = d;
+		else
+			rc++;
 	} while (length > 0);
 	FUNC_EXIT_RC(rc);
 	return rc;
@@ -364,12 +375,14 @@ static char* readUTFlen(char** pptr, char* enddata, int* len)
 		*len = readInt(pptr);
 		if (&(*pptr)[*len] <= enddata)
 		{
-			string = malloc(*len+1);
+			if ((string = malloc(*len+1)) == NULL)
+				goto exit;
 			memcpy(string, *pptr, *len);
 			string[*len] = '\0';
 			*pptr += *len;
 		}
 	}
+exit:
 	FUNC_EXIT;
 	return string;
 }
@@ -492,8 +505,14 @@ int MQTTPacket_send_disconnect(Clients* client, enum MQTTReasonCodes reason, MQT
 	if (client->MQTTVersion >= 5 && (props || reason != MQTTREASONCODE_SUCCESS))
 	{
 		size_t buflen = 1 + ((props == NULL) ? 0 : MQTTProperties_len(props));
-		char *buf = malloc(buflen), *ptr = NULL;
+		char *buf = NULL;
+		char *ptr = NULL;
 
+		if ((buf = malloc(buflen)) == NULL)
+		{
+			rc = SOCKET_ERROR;
+			goto exit;
+		}
 		ptr = buf;
 		writeChar(&ptr, reason);
 		if (props)
@@ -504,6 +523,7 @@ int MQTTPacket_send_disconnect(Clients* client, enum MQTTReasonCodes reason, MQT
 	}
 	else
 		rc = MQTTPacket_send(&client->net, header, NULL, 0, 0, client->MQTTVersion);
+exit:
 	Log(LOG_PROTOCOL, 28, NULL, client->net.socket, client->clientID, rc);
 	FUNC_EXIT_RC(rc);
 	return rc;
@@ -594,28 +614,32 @@ void MQTTPacket_freeAck(Ack* pack)
 
 /**
  * Send an MQTT acknowledgement packet down a socket.
+ * @param MQTTVersion the version of MQTT being used
  * @param type the MQTT packet type e.g. SUBACK
  * @param msgid the MQTT message id to use
  * @param dup boolean - whether to set the MQTT DUP flag
  * @param net the network handle to send the data to
  * @return the completion code (e.g. TCPSOCKET_COMPLETE)
  */
-static int MQTTPacket_send_ack(int type, int msgid, int dup, networkHandles *net)
+static int MQTTPacket_send_ack(int MQTTVersion, int type, int msgid, int dup, networkHandles *net)
 {
 	Header header;
-	int rc;
-	char *buf = malloc(2);
-	char *ptr = buf;
+	int rc = SOCKET_ERROR;
+	char *buf = NULL;
+	char *ptr = NULL;
 
 	FUNC_ENTRY;
+	if ((ptr = buf = malloc(2)) == NULL)
+		goto exit;
 	header.byte = 0;
 	header.bits.type = type;
 	header.bits.dup = dup;
 	if (type == PUBREL)
 	    header.bits.qos = 1;
 	writeInt(&ptr, msgid);
-	if ((rc = MQTTPacket_send(net, header, buf, 2, 1, MQTTVERSION_3_1_1)) != TCPSOCKET_INTERRUPTED)
+	if ((rc = MQTTPacket_send(net, header, buf, 2, 1, MQTTVersion)) != TCPSOCKET_INTERRUPTED)
 		free(buf);
+exit:
 	FUNC_EXIT_RC(rc);
 	return rc;
 }
@@ -623,17 +647,18 @@ static int MQTTPacket_send_ack(int type, int msgid, int dup, networkHandles *net
 
 /**
  * Send an MQTT PUBACK packet down a socket.
+ * @param MQTTVersion the version of MQTT being used
  * @param msgid the MQTT message id to use
  * @param socket the open socket to send the data to
  * @param clientID the string client identifier, only used for tracing
  * @return the completion code (e.g. TCPSOCKET_COMPLETE)
  */
-int MQTTPacket_send_puback(int msgid, networkHandles* net, const char* clientID)
+int MQTTPacket_send_puback(int MQTTVersion, int msgid, networkHandles* net, const char* clientID)
 {
 	int rc = 0;
 
 	FUNC_ENTRY;
-	rc =  MQTTPacket_send_ack(PUBACK, msgid, 0, net);
+	rc =  MQTTPacket_send_ack(MQTTVersion, PUBACK, msgid, 0, net);
 	Log(LOG_PROTOCOL, 12, NULL, net->socket, clientID, msgid, rc);
 	FUNC_EXIT_RC(rc);
 	return rc;
@@ -676,17 +701,18 @@ void MQTTPacket_freeUnsuback(Unsuback* pack)
 
 /**
  * Send an MQTT PUBREC packet down a socket.
+ * @param MQTTVersion the version of MQTT being used
  * @param msgid the MQTT message id to use
  * @param socket the open socket to send the data to
  * @param clientID the string client identifier, only used for tracing
  * @return the completion code (e.g. TCPSOCKET_COMPLETE)
  */
-int MQTTPacket_send_pubrec(int msgid, networkHandles* net, const char* clientID)
+int MQTTPacket_send_pubrec(int MQTTVersion, int msgid, networkHandles* net, const char* clientID)
 {
 	int rc = 0;
 
 	FUNC_ENTRY;
-	rc =  MQTTPacket_send_ack(PUBREC, msgid, 0, net);
+	rc =  MQTTPacket_send_ack(MQTTVersion, PUBREC, msgid, 0, net);
 	Log(LOG_PROTOCOL, 13, NULL, net->socket, clientID, msgid, rc);
 	FUNC_EXIT_RC(rc);
 	return rc;
@@ -695,18 +721,19 @@ int MQTTPacket_send_pubrec(int msgid, networkHandles* net, const char* clientID)
 
 /**
  * Send an MQTT PUBREL packet down a socket.
+ * @param MQTTVersion the version of MQTT being used
  * @param msgid the MQTT message id to use
  * @param dup boolean - whether to set the MQTT DUP flag
  * @param socket the open socket to send the data to
  * @param clientID the string client identifier, only used for tracing
  * @return the completion code (e.g. TCPSOCKET_COMPLETE)
  */
-int MQTTPacket_send_pubrel(int msgid, int dup, networkHandles* net, const char* clientID)
+int MQTTPacket_send_pubrel(int MQTTVersion, int msgid, int dup, networkHandles* net, const char* clientID)
 {
 	int rc = 0;
 
 	FUNC_ENTRY;
-	rc = MQTTPacket_send_ack(PUBREL, msgid, dup, net);
+	rc = MQTTPacket_send_ack(MQTTVersion, PUBREL, msgid, dup, net);
 	Log(LOG_PROTOCOL, 16, NULL, net->socket, clientID, msgid, rc);
 	FUNC_EXIT_RC(rc);
 	return rc;
@@ -715,17 +742,18 @@ int MQTTPacket_send_pubrel(int msgid, int dup, networkHandles* net, const char* 
 
 /**
  * Send an MQTT PUBCOMP packet down a socket.
+ * @param MQTTVersion the version of MQTT being used
  * @param msgid the MQTT message id to use
  * @param socket the open socket to send the data to
  * @param clientID the string client identifier, only used for tracing
  * @return the completion code (e.g. TCPSOCKET_COMPLETE)
  */
-int MQTTPacket_send_pubcomp(int msgid, networkHandles* net, const char* clientID)
+int MQTTPacket_send_pubcomp(int MQTTVersion, int msgid, networkHandles* net, const char* clientID)
 {
 	int rc = 0;
 
 	FUNC_ENTRY;
-	rc = MQTTPacket_send_ack(PUBCOMP, msgid, 0, net);
+	rc = MQTTPacket_send_ack(MQTTVersion, PUBCOMP, msgid, 0, net);
 	Log(LOG_PROTOCOL, 18, NULL, net->socket, clientID, msgid, rc);
 	FUNC_EXIT_RC(rc);
 	return rc;
@@ -734,6 +762,7 @@ int MQTTPacket_send_pubcomp(int msgid, networkHandles* net, const char* clientID
 
 /**
  * Function used in the new packets table to create acknowledgement packets.
+ * @param MQTTVersion the version of MQTT being used
  * @param aHeader the MQTT header byte
  * @param data the rest of the packet
  * @param datalen the length of the rest of the packet
@@ -795,10 +824,12 @@ int MQTTPacket_send_publish(Publish* pack, int dup, int qos, int retained, netwo
 {
 	Header header;
 	char *topiclen;
-	int rc = -1;
+	int rc = SOCKET_ERROR;
 
 	FUNC_ENTRY;
 	topiclen = malloc(2);
+	if (topiclen == NULL)
+		goto exit;
 
 	header.bits.type = PUBLISH;
 	header.bits.dup = dup;
@@ -813,6 +844,8 @@ int MQTTPacket_send_publish(Publish* pack, int dup, int qos, int retained, netwo
 		int frees[4] = {1, 0, 1, 0};
 
 		bufs[2] = ptr = malloc(buflen);
+		if (ptr == NULL)
+			goto exit_free;
 		if (qos > 0)
 			writeInt(&ptr, pack->msgId);
 		if (pack->MQTTVersion >= 5)
@@ -834,13 +867,16 @@ int MQTTPacket_send_publish(Publish* pack, int dup, int qos, int retained, netwo
 		writeInt(&ptr, (int)lens[1]);
 		rc = MQTTPacket_sends(net, header, 3, bufs, lens, frees, pack->MQTTVersion);
 	}
+	if (qos == 0)
+		Log(LOG_PROTOCOL, 27, NULL, net->socket, clientID, retained, rc, pack->payloadlen,
+				min(20, pack->payloadlen), pack->payload);
+	else
+		Log(LOG_PROTOCOL, 10, NULL, net->socket, clientID, pack->msgId, qos, retained, rc, pack->payloadlen,
+				min(20, pack->payloadlen), pack->payload);
+exit_free:
 	if (rc != TCPSOCKET_INTERRUPTED)
 		free(topiclen);
-	if (qos == 0)
-		Log(LOG_PROTOCOL, 27, NULL, net->socket, clientID, retained, rc);
-	else
-		Log(LOG_PROTOCOL, 10, NULL, net->socket, clientID, pack->msgId, qos, retained, rc,
-				min(20, pack->payloadlen), pack->payload);
+exit:
 	FUNC_EXIT_RC(rc);
 	return rc;
 }

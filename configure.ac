@@ -91,6 +91,7 @@ TEA_ADD_SOURCES([tclmqttc.c
     Thread.c
     MQTTProtocolOut.c
     MQTTPersistenceDefault.c
+    MQTTTime.c
     SocketBuffer.c
     Heap.c
     LinkedList.c
