@@ -4,7 +4,7 @@
 
 Name:          tcl.mqttc
 Summary:       MQTT Client for Tcl
-Version:       0.7
+Version:       0.8
 Release:       0
 License:       BSD 3-Clause License
 Group:         Development/Libraries/Tcl
