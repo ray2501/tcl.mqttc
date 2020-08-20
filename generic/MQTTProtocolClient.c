@@ -30,6 +30,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "MQTTProtocolClient.h"
 #if !defined(NO_PERSISTENCE)
@@ -176,6 +177,8 @@ int MQTTProtocol_startPublish(Clients* pubclient, Publish* publish, int qos, int
 		p.MQTTVersion = (*mm)->MQTTVersion;
 	}
 	rc = MQTTProtocol_startPublishCommon(pubclient, &p, qos, retained);
+	if (qos > 0)
+		memcpy((*mm)->publish->mask, p.mask, sizeof((*mm)->publish->mask));
 	FUNC_EXIT_RC(rc);
 	return rc;
 }
@@ -263,6 +266,7 @@ Publications* MQTTProtocol_storePublication(Publish* publish, int* len)
 	p->payload = publish->payload;
 	publish->payload = NULL;
 	*len += publish->payloadlen;
+	memcpy(p->mask, publish->mask, sizeof(p->mask));
 
 	if ((ListAppend(&(state.publications), p, *len)) == NULL)
 	{
@@ -665,14 +669,14 @@ void MQTTProtocol_keepalive(START_TIME_TYPE now)
 
 		if (client->ping_outstanding == 1)
 		{
-			if (MQTTTime_difftime(now, client->net.lastPing) >= (long)(client->keepAliveInterval * 1000))
+			if (MQTTTime_difftime(now, client->net.lastPing) >= (DIFF_TIME_TYPE)(client->keepAliveInterval * 1000))
 			{
 				Log(TRACE_PROTOCOL, -1, "PINGRESP not received in keepalive interval for client %s on socket %d, disconnecting", client->clientID, client->net.socket);
 				MQTTProtocol_closeSession(client, 1);
 			}
 		}
-		else if (MQTTTime_difftime(now, client->net.lastSent) >= (long)(client->keepAliveInterval * 1000) ||
-					MQTTTime_difftime(now, client->net.lastReceived) >= (long)(client->keepAliveInterval * 1000))
+		else if (MQTTTime_difftime(now, client->net.lastSent) >= (DIFF_TIME_TYPE)(client->keepAliveInterval * 1000) ||
+					MQTTTime_difftime(now, client->net.lastReceived) >= (DIFF_TIME_TYPE)(client->keepAliveInterval * 1000))
 		{
 			if (Socket_noPendingWrites(client->net.socket))
 			{
@@ -713,7 +717,7 @@ static void MQTTProtocol_retries(START_TIME_TYPE now, Clients* client, int regar
 		   Socket_noPendingWrites(client->net.socket)) /* there aren't any previous packets still stacked up on the socket */
 	{
 		Messages* m = (Messages*)(outcurrent->content);
-		if (regardless || MQTTTime_difftime(now, m->lastTouch) > (long)(max(client->retryInterval, 10) * 1000))
+		if (regardless || MQTTTime_difftime(now, m->lastTouch) > (DIFF_TIME_TYPE)(max(client->retryInterval, 10) * 1000))
 		{
 			if (m->qos == 1 || (m->qos == 2 && m->nextMessageType == PUBREC))
 			{
@@ -727,7 +731,9 @@ static void MQTTProtocol_retries(START_TIME_TYPE now, Clients* client, int regar
 				publish.payloadlen = m->publish->payloadlen;
 				publish.properties = m->properties;
 				publish.MQTTVersion = m->MQTTVersion;
+				memcpy(publish.mask, m->publish->mask, sizeof(publish.mask));
 				rc = MQTTPacket_send_publish(&publish, 1, m->qos, m->retain, &client->net, client->clientID);
+				memcpy(m->publish->mask, publish.mask, sizeof(m->publish->mask)); /* store websocket mask used in send */
 				if (rc == SOCKET_ERROR)
 				{
 					client->good = 0;

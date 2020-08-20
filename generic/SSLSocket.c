@@ -44,7 +44,7 @@
 #include <openssl/crypto.h>
 #include <openssl/x509v3.h>
 
-extern Sockets s;
+extern Sockets mod_s;
 
 static int SSLSocket_error(char* aString, SSL* ssl, int sock, int rc, int (*cb)(const char *str, size_t len, void *u), void* u);
 char* SSL_get_verify_result_string(int rc);
@@ -743,6 +743,7 @@ int SSLSocket_connect(SSL* ssl, int sock, const char* hostname, int verify, int 
 
 	FUNC_ENTRY;
 
+	ERR_clear_error();
 	rc = SSL_connect(ssl);
 	if (rc != 1)
 	{
@@ -761,7 +762,7 @@ int SSLSocket_connect(SSL* ssl, int sock, const char* hostname, int verify, int 
 		size_t hostname_len;
 
 		X509* cert = SSL_get_peer_certificate(ssl);
-		hostname_len = MQTTProtocol_addressPort(hostname, &port, NULL);
+		hostname_len = MQTTProtocol_addressPort(hostname, &port, NULL, MQTT_DEFAULT_PORT);
 
 		rc = X509_check_host(cert, hostname, hostname_len, 0, &peername);
 		if (rc == 1)
@@ -773,11 +774,11 @@ int SSLSocket_connect(SSL* ssl, int sock, const char* hostname, int verify, int 
 		if (peername != NULL)
 			OPENSSL_free(peername);
 
-		// 0 == fail, -1 == SSL internal error, -2 == mailformed input
+		/* 0 == fail, -1 == SSL internal error, -2 == malformed input */
 		if (rc == 0 || rc == -1 || rc == -2)
 		{
 			char* ip_addr = malloc(hostname_len + 1);
-			// cannot use = strndup(hostname, hostname_len); here because of custom Heap
+			/* cannot use = strndup(hostname, hostname_len); here because of custom Heap */
 			if (ip_addr)
 			{
 				strncpy(ip_addr, hostname, hostname_len);
@@ -818,6 +819,7 @@ int SSLSocket_getch(SSL* ssl, int socket, char* c)
 	if ((rc = SocketBuffer_getQueuedChar(socket, c)) != SOCKETBUFFER_INTERRUPTED)
 		goto exit;
 
+	ERR_clear_error();
 	if ((rc = SSL_read(ssl, c, (size_t)1)) < 0)
 	{
 		int err = SSLSocket_error("SSL_read - getch", ssl, socket, rc, NULL, NULL);
@@ -849,9 +851,8 @@ exit:
  *  @param actual_len the actual number of bytes read
  *  @return completion code
  */
-char *SSLSocket_getdata(SSL* ssl, int socket, size_t bytes, size_t* actual_len)
+char *SSLSocket_getdata(SSL* ssl, int socket, size_t bytes, size_t* actual_len, int* rc)
 {
-	int rc;
 	char* buf;
 
 	FUNC_ENTRY;
@@ -863,22 +864,23 @@ char *SSLSocket_getdata(SSL* ssl, int socket, size_t bytes, size_t* actual_len)
 
 	buf = SocketBuffer_getQueuedData(socket, bytes, actual_len);
 
-	if ((rc = SSL_read(ssl, buf + (*actual_len), (int)(bytes - (*actual_len)))) < 0)
+	ERR_clear_error();
+	if ((*rc = SSL_read(ssl, buf + (*actual_len), (int)(bytes - (*actual_len)))) < 0)
 	{
-		rc = SSLSocket_error("SSL_read - getdata", ssl, socket, rc, NULL, NULL);
-		if (rc != SSL_ERROR_WANT_READ && rc != SSL_ERROR_WANT_WRITE)
+		*rc = SSLSocket_error("SSL_read - getdata", ssl, socket, *rc, NULL, NULL);
+		if (*rc != SSL_ERROR_WANT_READ && *rc != SSL_ERROR_WANT_WRITE)
 		{
 			buf = NULL;
 			goto exit;
 		}
 	}
-	else if (rc == 0) /* rc 0 means the other end closed the socket */
+	else if (*rc == 0) /* rc 0 means the other end closed the socket */
 	{
 		buf = NULL;
 		goto exit;
 	}
 	else
-		*actual_len += rc;
+		*actual_len += *rc;
 
 	if (*actual_len == bytes)
 	{
@@ -922,6 +924,7 @@ int SSLSocket_close(networkHandles* net)
 
 	if (net->ssl)
 	{
+		ERR_clear_error();
 		rc = SSL_shutdown(net->ssl);
 		SSL_free(net->ssl);
 		net->ssl = NULL;
@@ -933,7 +936,7 @@ int SSLSocket_close(networkHandles* net)
 
 
 /* No SSL_writev() provided by OpenSSL. Boo. */
-int SSLSocket_putdatas(SSL* ssl, int socket, char* buf0, size_t buf0len, int count, char** buffers, size_t* buflens, int* frees)
+int SSLSocket_putdatas(SSL* ssl, int socket, char* buf0, size_t buf0len, PacketBuffers bufs)
 {
 	int rc = 0;
 	int i;
@@ -943,8 +946,8 @@ int SSLSocket_putdatas(SSL* ssl, int socket, char* buf0, size_t buf0len, int cou
 
 	FUNC_ENTRY;
 	iovec.iov_len = (ULONG)buf0len;
-	for (i = 0; i < count; i++)
-		iovec.iov_len += (ULONG)buflens[i];
+	for (i = 0; i < bufs.count; i++)
+		iovec.iov_len += (ULONG)bufs.buflens[i];
 
 	ptr = iovec.iov_base = (char *)malloc(iovec.iov_len);
 	if (!ptr)
@@ -954,16 +957,17 @@ int SSLSocket_putdatas(SSL* ssl, int socket, char* buf0, size_t buf0len, int cou
 	}
 	memcpy(ptr, buf0, buf0len);
 	ptr += buf0len;
-	for (i = 0; i < count; i++)
+	for (i = 0; i < bufs.count; i++)
 	{
-		if (buffers[i] != NULL && buflens[i] > 0)
+		if (bufs.buffers[i] != NULL && bufs.buflens[i] > 0)
 		{
-			memcpy(ptr, buffers[i], buflens[i]);
-			ptr += buflens[i];
+			memcpy(ptr, bufs.buffers[i], bufs.buflens[i]);
+			ptr += bufs.buflens[i];
 		}
 	}
 
 	SSL_lock_mutex(&sslCoreMutex);
+	ERR_clear_error();
 	if ((rc = SSL_write(ssl, iovec.iov_base, iovec.iov_len)) == iovec.iov_len)
 		rc = TCPSOCKET_COMPLETE;
 	else
@@ -985,8 +989,8 @@ int SSLSocket_putdatas(SSL* ssl, int socket, char* buf0, size_t buf0len, int cou
 				iovec.iov_len, socket);
 			SocketBuffer_pendingWrite(socket, ssl, 1, &iovec, &free, iovec.iov_len, 0);
 			*sockmem = socket;
-			ListAppend(s.write_pending, sockmem, sizeof(int));
-			FD_SET(socket, &(s.pending_wset));
+			ListAppend(mod_s.write_pending, sockmem, sizeof(int));
+			FD_SET(socket, &(mod_s.pending_wset));
 			rc = TCPSOCKET_INTERRUPTED;
 		}
 		else
@@ -1000,12 +1004,12 @@ int SSLSocket_putdatas(SSL* ssl, int socket, char* buf0, size_t buf0len, int cou
 	{
 		int i;
 		free(buf0);
-		for (i = 0; i < count; ++i)
+		for (i = 0; i < bufs.count; ++i)
 		{
-		    if (frees[i])
+		    if (bufs.frees[i])
 		    {
-		    	free(buffers[i]);
-		    	buffers[i] = NULL;
+		    	free(bufs.buffers[i]);
+		    	bufs.buffers[i] = NULL;
 		    }
 		}	
 	}
@@ -1052,6 +1056,7 @@ int SSLSocket_continueWrite(pending_writes* pw)
 	int rc = 0;
 
 	FUNC_ENTRY;
+	ERR_clear_error();
 	if ((rc = SSL_write(pw->ssl, pw->iovecs[0].iov_base, pw->iovecs[0].iov_len)) == pw->iovecs[0].iov_len)
 	{
 		/* topic and payload buffers are freed elsewhere, when all references to them have been removed */

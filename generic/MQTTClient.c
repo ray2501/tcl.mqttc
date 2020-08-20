@@ -351,15 +351,15 @@ static int MQTTClient_cleanSession(Clients* client);
 static MQTTResponse MQTTClient_connectURIVersion(
 	MQTTClient handle, MQTTClient_connectOptions* options,
 	const char* serverURI, int MQTTVersion,
-	START_TIME_TYPE start, long millisecsTimeout,
+	START_TIME_TYPE start, ELAPSED_TIME_TYPE millisecsTimeout,
 	MQTTProperties* connectProperties, MQTTProperties* willProperties);
 static MQTTResponse MQTTClient_connectURI(MQTTClient handle, MQTTClient_connectOptions* options, const char* serverURI,
 	MQTTProperties* connectProperties, MQTTProperties* willProperties);
 static int MQTTClient_disconnect1(MQTTClient handle, int timeout, int internal, int stop, enum MQTTReasonCodes, MQTTProperties*);
 static int MQTTClient_disconnect_internal(MQTTClient handle, int timeout);
 static void MQTTClient_retry(void);
-static MQTTPacket* MQTTClient_cycle(int* sock, unsigned long timeout, int* rc);
-static MQTTPacket* MQTTClient_waitfor(MQTTClient handle, int packet_type, int* rc, long timeout);
+static MQTTPacket* MQTTClient_cycle(int* sock, ELAPSED_TIME_TYPE timeout, int* rc);
+static MQTTPacket* MQTTClient_waitfor(MQTTClient handle, int packet_type, int* rc, ELAPSED_TIME_TYPE timeout);
 /*static int pubCompare(void* a, void* b); */
 static void MQTTProtocol_checkPendingWrites(void);
 static void MQTTClient_writeComplete(int socket, int rc);
@@ -840,7 +840,7 @@ static thread_return_type WINAPI MQTTClient_run(void* n)
 		}
 		else
 		{
-			if (m->c->messageQueue->count > 0)
+			if (m->c->messageQueue->count > 0 && m->ma)
 			{
 				qEntry* qe = (qEntry*)(m->c->messageQueue->first->content);
 				int topicLen = qe->topicLen;
@@ -1065,6 +1065,8 @@ static void MQTTClient_closeSession(Clients* client, enum MQTTReasonCodes reason
 		WebSocket_close(&client->net, WebSocket_CLOSE_NORMAL, NULL);
 
 #if defined(OPENSSL)
+		SSL_SESSION_free(client->session); /* is a no-op if session is NULL */
+		client->session = NULL; /* show the session has been freed */
 		SSLSocket_close(&client->net);
 #endif
 		Socket_close(client->net.socket);
@@ -1158,7 +1160,7 @@ exit:
 
 
 static MQTTResponse MQTTClient_connectURIVersion(MQTTClient handle, MQTTClient_connectOptions* options, const char* serverURI, int MQTTVersion,
-	START_TIME_TYPE start, long millisecsTimeout, MQTTProperties* connectProperties, MQTTProperties* willProperties)
+	START_TIME_TYPE start, ELAPSED_TIME_TYPE millisecsTimeout, MQTTProperties* connectProperties, MQTTProperties* willProperties)
 {
 	MQTTClients* m = handle;
 	int rc = SOCKET_ERROR;
@@ -1216,7 +1218,7 @@ static MQTTResponse MQTTClient_connectURIVersion(MQTTClient handle, MQTTClient_c
 #if defined(OPENSSL)
 		if (m->ssl)
 		{
-			int port;
+			int port1;
 			size_t hostname_len;
 			const char *topic;
 			int setSocketForSSLrc = 0;
@@ -1227,7 +1229,7 @@ static MQTTResponse MQTTClient_connectURIVersion(MQTTClient handle, MQTTClient_c
 					goto exit;
 			}
 
-			hostname_len = MQTTProtocol_addressPort(serverURI, &port, &topic);
+			hostname_len = MQTTProtocol_addressPort(serverURI, &port1, &topic, MQTT_DEFAULT_PORT);
 			setSocketForSSLrc = SSLSocket_setSocketForSSL(&m->c->net, m->c->sslopts,
 				serverURI, hostname_len);
 
@@ -1441,7 +1443,7 @@ static MQTTResponse MQTTClient_connectURI(MQTTClient handle, MQTTClient_connectO
 {
 	MQTTClients* m = handle;
 	START_TIME_TYPE start;
-	long millisecsTimeout = 30000L;
+	ELAPSED_TIME_TYPE millisecsTimeout = 30000L;
 	MQTTResponse rc = MQTTResponse_initializer;
 	int MQTTVersion = 0;
 
@@ -1855,7 +1857,7 @@ static int MQTTClient_disconnect1(MQTTClient handle, int timeout, int call_conne
 		m->c->connect_state = DISCONNECTING; /* indicate disconnecting */
 		while (m->c->inboundMsgs->count > 0 || m->c->outboundMsgs->count > 0)
 		{ /* wait for all inflight message flows to finish, up to timeout */
-			if (MQTTTime_elapsed(start) >= timeout)
+			if (MQTTTime_elapsed(start) >= (ELAPSED_TIME_TYPE)timeout)
 				break;
 			Thread_unlock_mutex(mqttclient_mutex);
 			MQTTClient_yield();
@@ -2290,6 +2292,7 @@ MQTTResponse MQTTClient_publish5(MQTTClient handle, const char* topicName, int p
 		rc = PAHO_MEMORY_ERROR;
 		goto exit_and_free;
 	}
+	memset(p->mask, '\0', sizeof(p->mask));
 	p->payload = NULL;
 	p->payloadlen = payloadlen;
 	if (payloadlen > 0)
@@ -2455,7 +2458,7 @@ static void MQTTClient_retry(void)
 }
 
 
-static MQTTPacket* MQTTClient_cycle(int* sock, unsigned long timeout, int* rc)
+static MQTTPacket* MQTTClient_cycle(int* sock, ELAPSED_TIME_TYPE timeout, int* rc)
 {
 	struct timeval tp = {0L, 0L};
 	static Ack ack;
@@ -2464,8 +2467,8 @@ static MQTTPacket* MQTTClient_cycle(int* sock, unsigned long timeout, int* rc)
 	FUNC_ENTRY;
 	if (timeout > 0L)
 	{
-		tp.tv_sec = timeout / 1000;
-		tp.tv_usec = (timeout % 1000) * 1000; /* this field is microseconds! */
+		tp.tv_sec = (long)(timeout / 1000);
+		tp.tv_usec = (long)((timeout % 1000) * 1000); /* this field is microseconds! */
 	}
 
 #if defined(OPENSSL)
@@ -2552,7 +2555,7 @@ static MQTTPacket* MQTTClient_cycle(int* sock, unsigned long timeout, int* rc)
 }
 
 
-static MQTTPacket* MQTTClient_waitfor(MQTTClient handle, int packet_type, int* rc, long timeout)
+static MQTTPacket* MQTTClient_waitfor(MQTTClient handle, int packet_type, int* rc, ELAPSED_TIME_TYPE timeout)
 {
 	MQTTPacket* pack = NULL;
 	MQTTClients* m = handle;
@@ -2569,15 +2572,15 @@ static MQTTPacket* MQTTClient_waitfor(MQTTClient handle, int packet_type, int* r
 	{
 		if (packet_type == CONNECT)
 		{
-			if ((*rc = Thread_wait_sem(m->connect_sem, timeout)) == 0)
+			if ((*rc = Thread_wait_sem(m->connect_sem, (int)timeout)) == 0)
 				*rc = m->rc;
 		}
 		else if (packet_type == CONNACK)
-			*rc = Thread_wait_sem(m->connack_sem, timeout);
+			*rc = Thread_wait_sem(m->connack_sem, (int)timeout);
 		else if (packet_type == SUBACK)
-			*rc = Thread_wait_sem(m->suback_sem, timeout);
+			*rc = Thread_wait_sem(m->suback_sem, (int)timeout);
 		else if (packet_type == UNSUBACK)
-			*rc = Thread_wait_sem(m->unsuback_sem, timeout);
+			*rc = Thread_wait_sem(m->unsuback_sem, (int)timeout);
 		if (*rc == 0 && packet_type != CONNECT && m->pack == NULL)
 			Log(LOG_ERROR, -1, "waitfor unexpectedly is NULL for client %s, packet_type %d, timeout %ld", m->c->clientID, packet_type, timeout);
 		pack = m->pack;
@@ -2647,7 +2650,7 @@ static MQTTPacket* MQTTClient_waitfor(MQTTClient handle, int packet_type, int* r
 					}
 				}
 			}
-			if (MQTTTime_elapsed(start) > timeout)
+			if (MQTTTime_elapsed(start) > (ELAPSED_TIME_TYPE)timeout)
 			{
 				pack = NULL;
 				break;
@@ -2666,7 +2669,7 @@ int MQTTClient_receive(MQTTClient handle, char** topicName, int* topicLen, MQTTC
 {
 	int rc = TCPSOCKET_COMPLETE;
 	START_TIME_TYPE start = MQTTTime_start_clock();
-	unsigned long elapsed = 0L;
+	ELAPSED_TIME_TYPE elapsed = 0L;
 	MQTTClients* m = handle;
 
 	FUNC_ENTRY;
@@ -2720,8 +2723,8 @@ exit:
 void MQTTClient_yield(void)
 {
 	START_TIME_TYPE start = MQTTTime_start_clock();
-	unsigned long elapsed = 0L;
-	unsigned long timeout = 100L;
+	ELAPSED_TIME_TYPE elapsed = 0L;
+	ELAPSED_TIME_TYPE timeout = 100L;
 	int rc = 0;
 
 	FUNC_ENTRY;
@@ -2763,7 +2766,7 @@ int MQTTClient_waitForCompletion(MQTTClient handle, MQTTClient_deliveryToken mdt
 {
 	int rc = MQTTCLIENT_FAILURE;
 	START_TIME_TYPE start = MQTTTime_start_clock();
-	unsigned long elapsed = 0L;
+	ELAPSED_TIME_TYPE elapsed = 0L;
 	MQTTClients* m = handle;
 
 	FUNC_ENTRY;

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2009, 2018 IBM Corp.
+ * Copyright (c) 2009, 2020 IBM Corp.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v2.0
@@ -45,11 +45,16 @@
 #define PERSISTENCE_COMMAND_KEY "c-"
 /** Stem of the key for an MQTT V5 async client command */
 #define PERSISTENCE_V5_COMMAND_KEY "c5-"
-/** Stem of the key for an async client message queue */
+/** Stem of the key for an client incoming message queue */
 #define PERSISTENCE_QUEUE_KEY "q-"
-/** Stem of the key for an MQTT V5 message queue */
+/** Stem of the key for an MQTT V5 incoming message queue */
 #define PERSISTENCE_V5_QUEUE_KEY "q5-"
-#define PERSISTENCE_MAX_KEY_LENGTH 8
+/** Maximum length of a stem for a persistence key */
+#define PERSISTENCE_MAX_STEM_LENGTH 3
+/** Maximum allowed length of a persistence key */
+#define PERSISTENCE_MAX_KEY_LENGTH 9
+/** Maximum size of an integer sequence number appended to a persistence key */
+#define PERSISTENCE_SEQNO_LIMIT 1000000 /*10^(PERSISTENCE_MAX_KEY_LENGTH - PERSISTENCE_MAX_STEM_LENGTH)*/
 
 int MQTTPersistence_create(MQTTClient_persistence** per, int type, void* pcontext);
 int MQTTPersistence_initialize(Clients* c, const char* serverURI);

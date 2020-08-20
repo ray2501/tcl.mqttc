@@ -37,6 +37,11 @@
 #include "SocketBuffer.h"
 #include "StackTrace.h"
 
+#if defined(__MINGW32__)
+#define htonll __builtin_bswap64
+#define ntohll __builtin_bswap64
+#endif
+
 #if defined(__linux__)
 #  include <endian.h>
 #elif defined(__APPLE__)
@@ -162,15 +167,14 @@ static const char *WebSocket_strcasefind(
 	const char *buf, const char *str, size_t len);
 
 static char *WebSocket_getRawSocketData(
-	networkHandles *net, size_t bytes, size_t* actual_len);
+	networkHandles *net, size_t bytes, size_t* actual_len, int* rc);
 
 static void WebSocket_rewindData( void );
 
 static void WebSocket_pong(
 	networkHandles *net, char *app_data, size_t app_data_len);
 
-static int WebSocket_receiveFrame(networkHandles *net,
-	size_t bytes, size_t *actual_len );
+static int WebSocket_receiveFrame(networkHandles *net, size_t *actual_len);
 
 
 /**
@@ -227,14 +231,14 @@ size_t WebSocket_calculateFrameHeaderSize(networkHandles *net, int mask_data, si
 struct frameData {
 	char* wsbuf0;
 	size_t wsbuf0len;
-	uint8_t mask[4];
 };
 
 static struct frameData WebSocket_buildFrame(networkHandles* net, int opcode, int mask_data,
-	char** pbuf0, size_t* pbuf0len, int count, char** buffers, size_t* buflens)
+	char** pbuf0, size_t* pbuf0len, PacketBuffers* bufs)
 {
 	int buf_len = 0u;
 	struct frameData rc;
+	int new_mask = 0;
 
 	FUNC_ENTRY;
 	memset(&rc, '\0', sizeof(rc));
@@ -246,8 +250,8 @@ static struct frameData WebSocket_buildFrame(networkHandles* net, int opcode, in
 
 		/* Calculate total length of MQTT buffers */
 		data_len = *pbuf0len;
-		for (i = 0; i < count; ++i)
-			data_len += buflens[i];
+		for (i = 0; i < bufs->count; ++i)
+			data_len += bufs->buflens[i];
 
 		/* add space for websocket frame header */
 		ws_header_size = WebSocket_calculateFrameHeaderSize(net, mask_data, data_len);
@@ -267,15 +271,19 @@ static struct frameData WebSocket_buildFrame(networkHandles* net, int opcode, in
 			rc.wsbuf0len = ws_header_size;
 		}
 
-		/* generate mask, since we are a client */
+		if (mask_data && (bufs->mask[0] == 0))
+		{
+			/* generate mask, since we are a client */
 #if defined(OPENSSL)
-		RAND_bytes( &rc.mask[0], sizeof(rc.mask) );
+			RAND_bytes(&bufs->mask[0], sizeof(bufs->mask));
 #else /* if defined(OPENSSL) */
-		rc.mask[0] = (rand() % UINT8_MAX);
-		rc.mask[1] = (rand() % UINT8_MAX);
-		rc.mask[2] = (rand() % UINT8_MAX);
-		rc.mask[3] = (rand() % UINT8_MAX);
+			bufs->mask[0] = (rand() % UINT8_MAX);
+			bufs->mask[1] = (rand() % UINT8_MAX);
+			bufs->mask[2] = (rand() % UINT8_MAX);
+			bufs->mask[3] = (rand() % UINT8_MAX);
 #endif /* else if defined(OPENSSL) */
+			new_mask = 1;
+		}
 
 		/* 1st byte */
 		rc.wsbuf0[buf_len] = (char)(1 << 7); /* final flag */
@@ -311,27 +319,30 @@ static struct frameData WebSocket_buildFrame(networkHandles* net, int opcode, in
 			buf_len = -1;
 		}
 
-		/* masking key */
-		if ( (mask_data & 0x1) && buf_len > 0 )
-		{
-			memcpy( &rc.wsbuf0[buf_len], &rc.mask, sizeof(uint32_t));
-			buf_len += sizeof(uint32_t);
-		}
-
-		if ( mask_data & 0x1 ) 		/* mask data */
+		if (mask_data)
 		{
 			size_t idx = 0u;
 
-			/* packet fixed header */
+			/* copy masking key into ws header */
+			memcpy( &rc.wsbuf0[buf_len], &bufs->mask, sizeof(uint32_t));
+			buf_len += sizeof(uint32_t);
+
+			/* mask packet fixed header */
 			for (i = (int)ws_header_size; i < (int)rc.wsbuf0len; ++i, ++idx)
-				rc.wsbuf0[i] ^= rc.mask[idx % 4];
+				rc.wsbuf0[i] ^= bufs->mask[idx % 4];
 
 			/* variable data buffers */
-			for (i = 0; i < count; ++i)
+			for (i = 0; i < bufs->count; ++i)
 			{
 				size_t j;
-				for ( j = 0u; j < buflens[i]; ++j, ++idx )
-					buffers[i][j] ^= rc.mask[idx % 4];
+
+				if (new_mask == 0 && (i == 2 || i == bufs->count-1))
+					/* topic (2) and payload (last) buffers are already masked */
+					break;
+				for ( j = 0u; j < bufs->buflens[i]; ++j, ++idx )
+				{
+					bufs->buffers[i][j] ^= bufs->mask[idx % 4];
+				}
 			}
 		}
 	}
@@ -341,17 +352,19 @@ exit:
 }
 
 
-static void WebSocket_unmaskData(uint8_t *mask, size_t idx, int count, char** buffers, size_t* buflens)
+static void WebSocket_unmaskData(size_t idx, PacketBuffers* bufs)
 {
 	int i;
 
 	FUNC_ENTRY;
-	for (i = 0; i < count; ++i)
+	for (i = 0; i < bufs->count; ++i)
 	{
 		size_t j;
-		for ( j = 0u; j < buflens[i]; ++j, ++idx )
-			buffers[i][j] ^= mask[idx % 4];
+		for (j = 0u; j < bufs->buflens[i]; ++j, ++idx)
+			bufs->buffers[i][j] ^= bufs->mask[idx % 4];
 	}
+	/* show that the mask has been removed */
+	bufs->mask[0] = bufs->mask[1] = bufs->mask[2] = bufs->mask[3] = 0;
 	FUNC_EXIT;
 }
 
@@ -367,7 +380,7 @@ static void WebSocket_unmaskData(uint8_t *mask, size_t idx, int count, char** bu
  *
  * @see WebSocket_upgrade
  */
-int WebSocket_connect( networkHandles *net, const char *uri )
+int WebSocket_connect( networkHandles *net, const char *uri)
 {
 	int rc;
 	char *buf = NULL;
@@ -404,7 +417,7 @@ int WebSocket_connect( networkHandles *net, const char *uri )
 	Base64_encode( net->websocket_key, 25u, uuid, sizeof(uuid_t) );
 #endif /* else if defined(_WIN32) || defined(_WIN64) */
 
-	hostname_len = MQTTProtocol_addressPort(uri, &port, &topic);
+	hostname_len = MQTTProtocol_addressPort(uri, &port, &topic, WS_DEFAULT_PORT);
 
 	/* if no topic, use default */
 	if ( !topic )
@@ -476,14 +489,14 @@ int WebSocket_connect( networkHandles *net, const char *uri )
 
 	if ( buf )
 	{
+		PacketBuffers nulbufs = {0, NULL, NULL, NULL, {0, 0, 0, 0}};
+
 #if defined(OPENSSL)
 		if (net->ssl)
-			SSLSocket_putdatas(net->ssl, net->socket,
-				buf, buf_len, 0, NULL, NULL, NULL );
+			SSLSocket_putdatas(net->ssl, net->socket, buf, buf_len, nulbufs);
 		else
 #endif
-			Socket_putdatas( net->socket, buf, buf_len,
-				0, NULL, NULL, NULL );
+			Socket_putdatas(net->socket, buf, buf_len, nulbufs);
 		free( buf );
 		rc = 1;
 	}
@@ -507,8 +520,10 @@ exit:
  */
 void WebSocket_close(networkHandles *net, int status_code, const char *reason)
 {
-	FUNC_ENTRY;
+	struct frameData fd;
+	PacketBuffers nulbufs = {0, NULL, NULL, NULL, {0, 0, 0, 0}};
 
+	FUNC_ENTRY;
 	if ( net->websocket )
 	{
 		char *buf0;
@@ -535,17 +550,16 @@ void WebSocket_close(networkHandles *net, int status_code, const char *reason)
 		if ( reason )
 			strcpy( &buf0[sizeof(uint16_t)], reason );
 
-		WebSocket_buildFrame( net, WebSocket_OP_CLOSE, mask_data,
-			&buf0, &buf0len, 0, NULL, NULL);
+		fd = WebSocket_buildFrame( net, WebSocket_OP_CLOSE, mask_data, &buf0, &buf0len, &nulbufs);
 
 #if defined(OPENSSL)
 		if (net->ssl)
-			SSLSocket_putdatas(net->ssl, net->socket,
-				buf0, buf0len, 0, NULL, NULL, NULL);
+			SSLSocket_putdatas(net->ssl, net->socket, fd.wsbuf0, fd.wsbuf0len, nulbufs);
 		else
 #endif
-			Socket_putdatas(net->socket, buf0, buf0len, 0,
-				NULL, NULL, NULL);
+			Socket_putdatas(net->socket, fd.wsbuf0, fd.wsbuf0len, nulbufs);
+
+		free(fd.wsbuf0); /* free temporary ws header */
 
 		/* websocket connection is now closed */
 		net->websocket = 0;
@@ -584,10 +598,10 @@ int WebSocket_getch(networkHandles *net, char* c)
 		if ( in_frames && in_frames->first )
 			frame = in_frames->first->content;
 
-		if ( !frame )
+		if ( !frame  || frame->len == frame->pos )
 		{
 			size_t actual_len = 0u;
-			rc =  WebSocket_receiveFrame( net, 1u, &actual_len );
+			rc = WebSocket_receiveFrame( net, &actual_len);
 			if ( rc != TCPSOCKET_COMPLETE )
 				goto exit;
 
@@ -617,6 +631,28 @@ exit:
 	return rc;
 }
 
+size_t WebSocket_framePos()
+{
+	if ( in_frames && in_frames->first )
+	{
+		struct ws_frame *frame = in_frames->first->content;
+		return frame->pos;
+	}
+	else
+	{
+		return 0;
+	}
+}
+
+void WebSocket_framePosSeekTo(size_t pos)
+{
+	if ( in_frames && in_frames->first )
+	{
+		struct ws_frame *frame = in_frames->first->content;
+		frame->pos = pos;
+	}
+}
+
 /**
  * @brief receives data from a socket.
  * It should receive all data from the socket that is immediately available.
@@ -633,6 +669,7 @@ exit:
 char *WebSocket_getdata(networkHandles *net, size_t bytes, size_t* actual_len)
 {
 	char *rv = NULL;
+	int rc;
 
 	FUNC_ENTRY;
 	if ( net->websocket )
@@ -646,7 +683,7 @@ char *WebSocket_getdata(networkHandles *net, size_t bytes, size_t* actual_len)
 				frame = in_frames->first->content;
 
 			/* return the data from the next frame, if we have one */
-			if ( frame )
+			if ( frame  && frame->pos == frame->len )
 			{
 				rv = (char *)frame +
 					sizeof(struct ws_frame) + frame->pos;
@@ -667,7 +704,7 @@ char *WebSocket_getdata(networkHandles *net, size_t bytes, size_t* actual_len)
 		if ( !frame )
 		{
 			const int rc =
-				WebSocket_receiveFrame( net, bytes, actual_len );
+				WebSocket_receiveFrame( net, actual_len );
 
 			if ( rc == TCPSOCKET_COMPLETE && in_frames && in_frames->first)
 				frame = in_frames->first->content;
@@ -680,11 +717,10 @@ char *WebSocket_getdata(networkHandles *net, size_t bytes, size_t* actual_len)
 
 
 			while (*actual_len < bytes) {
-				const int rc = WebSocket_receiveFrame(net, bytes, actual_len);
+				const int rc = WebSocket_receiveFrame(net, actual_len);
 
 				if (rc != TCPSOCKET_COMPLETE) {
-					frame->pos = 0;
-					break;
+					goto exit;
 				}
 
 				/* refresh pointers */
@@ -694,8 +730,11 @@ char *WebSocket_getdata(networkHandles *net, size_t bytes, size_t* actual_len)
 
 			} /* end while */
 
-
-			if (*actual_len == bytes && in_frames)
+			if (*actual_len > bytes)
+			{
+				frame->pos += bytes;
+			}
+			else if (*actual_len == bytes && in_frames)
 			{
 				if ( last_frame )
 					free( last_frame );
@@ -705,10 +744,10 @@ char *WebSocket_getdata(networkHandles *net, size_t bytes, size_t* actual_len)
 	}
 #if defined(OPENSSL)
 	else if ( net->ssl )
-		rv = SSLSocket_getdata(net->ssl, net->socket, bytes, actual_len);
+		rv = SSLSocket_getdata(net->ssl, net->socket, bytes, actual_len, &rc);
 #endif
 	else
-		rv = Socket_getdata(net->socket, bytes, actual_len);
+		rv = Socket_getdata(net->socket, bytes, actual_len, &rc);
 
 exit:
 	FUNC_EXIT_RC(rv);
@@ -729,7 +768,7 @@ void WebSocket_rewindData( void )
  *
  * @return a buffer containing raw data
  */
-char *WebSocket_getRawSocketData(networkHandles *net, size_t bytes, size_t* actual_len)
+char *WebSocket_getRawSocketData(networkHandles *net, size_t bytes, size_t* actual_len, int* rc)
 {
 	char *rv = NULL;
 
@@ -757,10 +796,16 @@ char *WebSocket_getRawSocketData(networkHandles *net, size_t bytes, size_t* actu
 	// not enough data in the buffer, get data from socket
 #if defined(OPENSSL)
 	if ( net->ssl )
-		rv = SSLSocket_getdata(net->ssl, net->socket, bytes, actual_len);
+		rv = SSLSocket_getdata(net->ssl, net->socket, bytes, actual_len, rc);
 	else
 #endif
-		rv = Socket_getdata(net->socket, bytes, actual_len);
+		rv = Socket_getdata(net->socket, bytes, actual_len, rc);
+
+	if (*rc == 0)
+	{
+		*rc = SOCKET_ERROR;
+		goto exit;
+	}
 
 	// clear buffer
 	if (bytes == 0)
@@ -849,26 +894,23 @@ void WebSocket_pong(networkHandles *net, char *app_data, size_t app_data_len)
 		char *buf0 = NULL;
 		size_t buf0len = 0;
 		int freeData = 0;
+		struct frameData fd;
 		const int mask_data = 1; /* all frames from client must be masked */
+		PacketBuffers appbuf = {1, &app_data, &app_data_len, &freeData, {0, 0, 0, 0}};
 
-		WebSocket_buildFrame( net, WebSocket_OP_PONG, mask_data,
-			&buf0, &buf0len, 1, &app_data, &app_data_len);
+		fd = WebSocket_buildFrame( net, WebSocket_OP_PONG, mask_data, &buf0, &buf0len, &appbuf);
 
 		Log(TRACE_PROTOCOL, 1, "Sending WebSocket PONG" );
 
 #if defined(OPENSSL)
 		if (net->ssl)
-			SSLSocket_putdatas(net->ssl, net->socket, buf0,
-				buf0len /*header_len + app_data_len*/, 1,
-				&app_data, &app_data_len, &freeData);
+			SSLSocket_putdatas(net->ssl, net->socket, fd.wsbuf0, fd.wsbuf0len /*header_len + app_data_len*/, appbuf);
 		else
 #endif
-			Socket_putdatas(net->socket, buf0,
-				buf0len /*header_len + app_data_len*/, 1,
-				&app_data, &app_data_len, &freeData );
+			Socket_putdatas(net->socket, fd.wsbuf0, fd.wsbuf0len /*header_len + app_data_len*/, appbuf);
 
-		/* clean up memory */
-		free( buf0 );
+		free(fd.wsbuf0);
+		free(buf0);
 	}
 	FUNC_EXIT;
 }
@@ -893,8 +935,7 @@ void WebSocket_pong(networkHandles *net, char *app_data, size_t app_data_len)
  *
  * @see WebSocket_calculateFrameHeaderSize
  */
-int WebSocket_putdatas(networkHandles* net, char** buf0, size_t* buf0len,
-	int count, char** buffers, size_t* buflens, int* freeData)
+int WebSocket_putdatas(networkHandles* net, char** buf0, size_t* buf0len, PacketBuffers* bufs)
 {
 	const int mask_data = 1; /* must mask websocket data from client */
 	int rc;
@@ -904,20 +945,19 @@ int WebSocket_putdatas(networkHandles* net, char** buf0, size_t* buf0len,
 	{
 		struct frameData wsdata;
 
-		wsdata = WebSocket_buildFrame(
-			net, WebSocket_OP_BINARY, mask_data, buf0, buf0len,
-			count, buffers, buflens);
+		wsdata = WebSocket_buildFrame(net, WebSocket_OP_BINARY, mask_data, buf0, buf0len, bufs);
+
 #if defined(OPENSSL)
 		if (net->ssl)
-			rc = SSLSocket_putdatas(net->ssl, net->socket, wsdata.wsbuf0, wsdata.wsbuf0len, count, buffers, buflens, freeData);
+			rc = SSLSocket_putdatas(net->ssl, net->socket, wsdata.wsbuf0, wsdata.wsbuf0len, *bufs);
 		else
 #endif
-			rc = Socket_putdatas(net->socket, wsdata.wsbuf0, wsdata.wsbuf0len, count, buffers, buflens, freeData);
+			rc = Socket_putdatas(net->socket, wsdata.wsbuf0, wsdata.wsbuf0len, *bufs);
 
 		if (rc != TCPSOCKET_INTERRUPTED)
 		{
 			if (mask_data)
-				WebSocket_unmaskData(wsdata.mask, *buf0len, count, buffers, buflens);
+				WebSocket_unmaskData(*buf0len, bufs);
 			free(wsdata.wsbuf0); /* free temporary ws header */
 		}
 	}
@@ -925,10 +965,10 @@ int WebSocket_putdatas(networkHandles* net, char** buf0, size_t* buf0len,
 	{
 #if defined(OPENSSL)
 		if (net->ssl)
-			rc = SSLSocket_putdatas(net->ssl, net->socket, *buf0, *buf0len, count, buffers, buflens, freeData);
+			rc = SSLSocket_putdatas(net->ssl, net->socket, *buf0, *buf0len, *bufs);
 		else
 #endif
-			rc = Socket_putdatas(net->socket, *buf0, *buf0len, count, buffers, buflens, freeData);
+			rc = Socket_putdatas(net->socket, *buf0, *buf0len, *bufs);
 	}
 
 	FUNC_EXIT_RC(rc);
@@ -941,14 +981,13 @@ int WebSocket_putdatas(networkHandles* net, char** buf0, size_t* buf0len,
  * SocketBuffer mechanism.
  *
  * @param[in]      net                 network connection
- * @param[in]      bytes               amount of data to receive
  * @param[out]     actual_len          amount of data actually read
  *
  * @retval TCPSOCKET_COMPLETE          packet received
  * @retval TCPSOCKET_INTERRUPTED       incomplete packet received
  * @retval SOCKET_ERROR                an error was encountered
  */
-int WebSocket_receiveFrame(networkHandles *net, size_t bytes, size_t *actual_len)
+int WebSocket_receiveFrame(networkHandles *net, size_t *actual_len)
 {
 	struct ws_frame *res = NULL;
 	int rc = TCPSOCKET_COMPLETE;
@@ -978,8 +1017,14 @@ int WebSocket_receiveFrame(networkHandles *net, size_t bytes, size_t *actual_len
 				size_t cur_len = 0u;
 				uint8_t mask[4] = { 0u, 0u, 0u, 0u };
 				size_t payload_len;
+				int rcs; /* socket return code */
 
-				b = WebSocket_getRawSocketData(net, 2u, &len);
+				b = WebSocket_getRawSocketData(net, 2u, &len, &rcs);
+				if (rcs == SOCKET_ERROR)
+				{
+					rc = rcs;
+					goto exit;
+				}
 				if ( !b )
 				{
 					rc = TCPSOCKET_INTERRUPTED;
@@ -1017,7 +1062,12 @@ int WebSocket_receiveFrame(networkHandles *net, size_t bytes, size_t *actual_len
 				{
 					/* If 126, the following 2 bytes interpreted as a
 					      16-bit unsigned integer are the payload length. */
-					b = WebSocket_getRawSocketData(net, 2u, &len);
+					b = WebSocket_getRawSocketData(net, 2u, &len, &rcs);
+					if (rcs == SOCKET_ERROR)
+					{
+						rc = rcs;
+						goto exit;
+					}
 					if ( !b )
 					{
 						rc = SOCKET_ERROR;
@@ -1035,7 +1085,12 @@ int WebSocket_receiveFrame(networkHandles *net, size_t bytes, size_t *actual_len
 				{
 					 /* If 127, the following 8 bytes interpreted as a 64-bit unsigned integer (the
 					      most significant bit MUST be 0) are the payload length */
-					b = WebSocket_getRawSocketData(net, 8u, &len);
+					b = WebSocket_getRawSocketData(net, 8u, &len, &rcs);
+					if (rcs == SOCKET_ERROR)
+					{
+						rc = rcs;
+						goto exit;
+					}
 					if ( !b )
 					{
 						rc = SOCKET_ERROR;
@@ -1053,13 +1108,18 @@ int WebSocket_receiveFrame(networkHandles *net, size_t bytes, size_t *actual_len
 				if ( has_mask )
 				{
 					uint8_t mask[4];
-					b = WebSocket_getRawSocketData(net, 4u, &len);
+					b = WebSocket_getRawSocketData(net, 4u, &len, &rcs);
+					if (rcs == SOCKET_ERROR)
+					{
+						rc = rcs;
+						goto exit;
+					}
 					if ( !b )
 					{
 						rc = SOCKET_ERROR;
 						goto exit;
-					} 
-					else if (len < 4u )
+					}
+					if (len < 4u )
 					{
 						rc = TCPSOCKET_INTERRUPTED;
 						goto exit;
@@ -1068,14 +1128,18 @@ int WebSocket_receiveFrame(networkHandles *net, size_t bytes, size_t *actual_len
 				}
 
 				/* use the socket buffer to read in the whole websocket frame */
-				b = WebSocket_getRawSocketData(net, payload_len, &len);
-
-				if ( !b )
+				b = WebSocket_getRawSocketData(net, payload_len, &len, &rcs);
+				if (rcs == SOCKET_ERROR)
+				{
+					rc = rcs;
+					goto exit;
+				}
+				if (!b)
 				{
 					rc = SOCKET_ERROR;
 					goto exit;
 				} 
-				else if (len < payload_len )
+				if (len < payload_len )
 				{
 					rc = TCPSOCKET_INTERRUPTED;
 					goto exit;
@@ -1113,7 +1177,12 @@ int WebSocket_receiveFrame(networkHandles *net, size_t bytes, size_t *actual_len
 				memcpy( (unsigned char *)res + sizeof(struct ws_frame) + cur_len, b, len );
 				res->len = cur_len + len;
 
-				WebSocket_getRawSocketData(net, 0u, &len);
+				WebSocket_getRawSocketData(net, 0u, &len, &rcs);
+				if (rcs == SOCKET_ERROR)
+				{
+					rc = rcs;
+					goto exit;
+				}
 			}
 
 			if ( opcode == WebSocket_OP_PING || opcode == WebSocket_OP_PONG )
@@ -1257,7 +1326,9 @@ int WebSocket_upgrade( networkHandles *net )
 		Base64_encode( ws_key, sizeof(ws_key), sha_hash, SHA1_DIGEST_LENGTH );
 
 		rc = TCPSOCKET_INTERRUPTED;
-		read_buf = WebSocket_getRawSocketData( net, 12u, &rcv );
+		read_buf = WebSocket_getRawSocketData( net, 12u, &rcv, &rc);
+		if (rc == SOCKET_ERROR)
+			goto exit;
 
 		if ((read_buf == NULL) || rcv < 12u) {
 			Log(TRACE_PROTOCOL, 1, "WebSocket upgrade read not complete %lu", rcv );
@@ -1278,7 +1349,9 @@ int WebSocket_upgrade( networkHandles *net )
 		{
 			const char *p;
 
-			read_buf = WebSocket_getRawSocketData(net, 1024u, &rcv );
+			read_buf = WebSocket_getRawSocketData(net, 1024u, &rcv, &rc);
+			if (rc == SOCKET_ERROR)
+				goto exit;
 
 			/* Did we read the whole response? */
 			if (read_buf && rcv > 4 && memcmp(&read_buf[rcv-4], "\r\n\r\n", 4) != 0)
@@ -1349,7 +1422,7 @@ int WebSocket_upgrade( networkHandles *net )
 			}
 
 			/* indicate that we done with the packet */
-			WebSocket_getRawSocketData( net, 0u, &rcv );
+			WebSocket_getRawSocketData( net, 0u, &rcv, &rc);
 		}
 	}
 
@@ -1375,9 +1448,10 @@ int WebSocket_proxy_connect( networkHandles *net, int ssl, const char *hostname)
 	char *buf = NULL;
 	size_t hostname_len, actual_len = 0; 
 	time_t current, timeout;
+	PacketBuffers nulbufs = {0, NULL, NULL, NULL, {0, 0, 0, 0}};
+
 	FUNC_ENTRY;
- 
-	hostname_len = MQTTProtocol_addressPort(hostname, &port, NULL);
+	hostname_len = MQTTProtocol_addressPort(hostname, &port, NULL, WS_DEFAULT_PORT);
 	for ( i = 0; i < 2; ++i ) {
 #if defined(OPENSSL)
 		if(ssl) {
@@ -1427,8 +1501,9 @@ int WebSocket_proxy_connect( networkHandles *net, int ssl, const char *hostname)
 
 		}  
 	}
+	Log(TRACE_PROTOCOL, -1, "WebSocket_proxy_connect: \"%s\"", buf);
 
-	Socket_putdatas( net->socket, buf, buf_len, 0, NULL, NULL, NULL );
+	Socket_putdatas(net->socket, buf, buf_len, nulbufs);
 	free(buf);
 	buf = NULL;
 
@@ -1436,7 +1511,7 @@ int WebSocket_proxy_connect( networkHandles *net, int ssl, const char *hostname)
 	timeout += (time_t)10;
 
 	while(1) {
-		buf = Socket_getdata(net->socket, (size_t)12, &actual_len);
+		buf = Socket_getdata(net->socket, (size_t)12, &actual_len, &rc);
 		if(actual_len) {
 			if ( (strncmp( buf, "HTTP/1.0 200", 12 ) != 0) &&  (strncmp( buf, "HTTP/1.1 200", 12 ) != 0) )
 				rc = SOCKET_ERROR;
@@ -1456,10 +1531,15 @@ int WebSocket_proxy_connect( networkHandles *net, int ssl, const char *hostname)
 		}
 	}
 
-	/* flash the SocketBuffer */
+	/* flush the SocketBuffer */
 	actual_len = 1;
-	while(actual_len)
-		buf = Socket_getdata(net->socket, (size_t)1, &actual_len);
+	while (actual_len)
+	{
+		int rc1;
+
+		buf = Socket_getdata(net->socket, (size_t)1, &actual_len, &rc1);
+	}
+
 exit:
 	FUNC_EXIT_RC(rc);
 	return rc;
