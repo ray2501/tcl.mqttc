@@ -217,17 +217,13 @@ BOOL APIENTRY DllMain(HANDLE hModule,
 	switch (ul_reason_for_call)
 	{
 		case DLL_PROCESS_ATTACH:
-			Log(TRACE_MAX, -1, "DLL process attach");
 			MQTTClient_init();
 			break;
 		case DLL_THREAD_ATTACH:
-			Log(TRACE_MAX, -1, "DLL thread attach");
 			break;
 		case DLL_THREAD_DETACH:
-			Log(TRACE_MAX, -1, "DLL thread detach");
 			break;
 		case DLL_PROCESS_DETACH:
-			Log(TRACE_MAX, -1, "DLL process detach");
 			if (lpReserved)
 				MQTTClient_cleanup();
 			break;
@@ -388,6 +384,12 @@ int MQTTClient_createWithOptions(MQTTClient* handle, const char* serverURI, cons
 	if (!UTF8_validateString(clientId))
 	{
 		rc = MQTTCLIENT_BAD_UTF8_STRING;
+		goto exit;
+	}
+
+	if (strlen(clientId) == 0 && persistence_type == MQTTCLIENT_PERSISTENCE_DEFAULT)
+	{
+		rc = MQTTCLIENT_PERSISTENCE_ERROR;
 		goto exit;
 	}
 
@@ -618,10 +620,10 @@ void MQTTClient_free(void* memory)
 void MQTTResponse_free(MQTTResponse response)
 {
 	FUNC_ENTRY;
+	if (response.reasonCodeCount > 0 && response.reasonCodes)
+		free(response.reasonCodes);
 	if (response.properties)
 	{
-		if (response.reasonCodeCount > 0 && response.reasonCodes)
-			free(response.reasonCodes);
 		MQTTProperties_free(response.properties);
 		free(response.properties);
 	}
@@ -1582,6 +1584,11 @@ static MQTTResponse MQTTClient_connectURI(MQTTClient handle, MQTTClient_connectO
 			m->c->sslopts->ssl_psk_context = options->ssl->ssl_psk_context;
 			m->c->sslopts->disableDefaultTrustStore = options->ssl->disableDefaultTrustStore;
 		}
+		if (m->c->sslopts->struct_version >= 5)
+		{
+		    m->c->sslopts->protos = options->ssl->protos;
+		    m->c->sslopts->protos_len = options->ssl->protos_len;
+		}
 	}
 #endif
 
@@ -1728,7 +1735,7 @@ MQTTResponse MQTTClient_connectAll(MQTTClient handle, MQTTClient_connectOptions*
 #if defined(OPENSSL)
 	if (options->struct_version != 0 && options->ssl) /* check validity of SSL options structure */
 	{
-		if (strncmp(options->ssl->struct_id, "MQTS", 4) != 0 || options->ssl->struct_version < 0 || options->ssl->struct_version > 4)
+		if (strncmp(options->ssl->struct_id, "MQTS", 4) != 0 || options->ssl->struct_version < 0 || options->ssl->struct_version > 5)
 		{
 			rc.reasonCode = MQTTCLIENT_BAD_STRUCTURE;
 			goto exit;
