@@ -51,13 +51,14 @@ int isReady(int socket, fd_set* read_set, fd_set* write_set);
 int Socket_writev(int socket, iobuf* iovecs, int count, unsigned long* bytes);
 int Socket_close_only(int socket);
 int Socket_continueWrite(int socket);
-int Socket_continueWrites(fd_set* pwset);
+int Socket_continueWrites(fd_set* pwset, int* socket);
 char* Socket_getaddrname(struct sockaddr* sa, int sock);
 int Socket_abortWrite(int socket);
 
 #if defined(_WIN32) || defined(_WIN64)
 #define iov_len len
 #define iov_base buf
+#define snprintf _snprintf
 #endif
 
 /**
@@ -237,11 +238,13 @@ int isReady(int socket, fd_set* read_set, fd_set* write_set)
  *  @param more_work flag to indicate more work is waiting, and thus a timeout value of 0 should
  *  be used for the select
  *  @param tp the timeout to be used for the select, unless overridden
+ *  @param rc a value other than 0 indicates an error of the returned socket
  *  @return the socket next ready, or 0 if none is ready
  */
-int Socket_getReadySocket(int more_work, struct timeval *tp, mutex_type mutex)
+int Socket_getReadySocket(int more_work, struct timeval *tp, mutex_type mutex, int* rc)
 {
-	int rc = 0;
+	int sock = 0;
+	*rc = 0;
 	static struct timeval zero = {0L, 0L}; /* 0 seconds */
 	static struct timeval one = {1L, 0L}; /* 1 second */
 	struct timeval timeout = one;
@@ -272,18 +275,18 @@ int Socket_getReadySocket(int more_work, struct timeval *tp, mutex_type mutex)
 		memcpy((void*)&(pwset), (void*)&(mod_s.pending_wset), sizeof(pwset));
 		/* Prevent performance issue by unlocking the socket_mutex while waiting for a ready socket. */
 		Thread_unlock_mutex(mutex);
-		rc = select(mod_s.maxfdp1, &(mod_s.rset), &pwset, NULL, &timeout);
+		*rc = select(mod_s.maxfdp1, &(mod_s.rset), &pwset, NULL, &timeout);
 		Thread_lock_mutex(mutex);
-		if (rc == SOCKET_ERROR)
+		if (*rc == SOCKET_ERROR)
 		{
 			Socket_error("read select", 0);
 			goto exit;
 		}
-		Log(TRACE_MAX, -1, "Return code %d from read select", rc);
+		Log(TRACE_MAX, -1, "Return code %d from read select", *rc);
 
-		if (Socket_continueWrites(&pwset) == SOCKET_ERROR)
+		if (Socket_continueWrites(&pwset, &sock) == SOCKET_ERROR)
 		{
-			rc = 0;
+			*rc = SOCKET_ERROR;
 			goto exit;
 		}
 
@@ -291,13 +294,16 @@ int Socket_getReadySocket(int more_work, struct timeval *tp, mutex_type mutex)
 		if ((rc1 = select(mod_s.maxfdp1, NULL, &(wset), NULL, &zero)) == SOCKET_ERROR)
 		{
 			Socket_error("write select", 0);
-			rc = rc1;
+			*rc = rc1;
 			goto exit;
 		}
 		Log(TRACE_MAX, -1, "Return code %d from write select", rc1);
 
-		if (rc == 0 && rc1 == 0)
+		if (*rc == 0 && rc1 == 0)
+		{
+			sock = 0;
 			goto exit; /* no work to do */
+		}
 
 		mod_s.cur_clientsds = mod_s.clientsds->first;
 		while (mod_s.cur_clientsds != NULL)
@@ -309,17 +315,18 @@ int Socket_getReadySocket(int more_work, struct timeval *tp, mutex_type mutex)
 		}
 	}
 
+	*rc = 0;
 	if (mod_s.cur_clientsds == NULL)
-		rc = 0;
+		sock = 0;
 	else
 	{
-		rc = *((int*)(mod_s.cur_clientsds->content));
+		sock = *((int*)(mod_s.cur_clientsds->content));
 		ListNextElement(mod_s.clientsds, &mod_s.cur_clientsds);
 	}
 exit:
 	Thread_unlock_mutex(mutex);
-	FUNC_EXIT_RC(rc);
-	return rc;
+	FUNC_EXIT_RC(sock);
+	return sock;
 } /* end getReadySocket */
 
 
@@ -895,7 +902,6 @@ int Socket_continueWrite(int socket)
 			size_t offset = pw->bytes - curbuflen;
 			iovecs1[++curbuf].iov_len = pw->iovecs[i].iov_len - (ULONG)offset;
 			iovecs1[curbuf].iov_base = (char*)pw->iovecs[i].iov_base + offset;
-			break;
 		}
 		curbuflen += pw->iovecs[i].iov_len;
 	}
@@ -978,9 +984,10 @@ exit:
 /**
  *  Continue any outstanding writes for a socket set
  *  @param pwset the set of sockets
- *  @return completion code
+ *  @param sock in case of a socket error contains the affected socket
+ *  @return completion code, 0 or SOCKET_ERROR
  */
-int Socket_continueWrites(fd_set* pwset)
+int Socket_continueWrites(fd_set* pwset, int* sock)
 {
 	int rc1 = 0;
 	ListElement* curpending = mod_s.write_pending->first;
@@ -1008,6 +1015,12 @@ int Socket_continueWrites(fd_set* pwset)
 		}
 		else
 			ListNextElement(mod_s.write_pending, &curpending);
+
+		if(rc == SOCKET_ERROR)
+		{
+			*sock = socket;
+			rc1 = SOCKET_ERROR;
+		}
 	}
 	FUNC_EXIT_RC(rc1);
 	return rc1;
@@ -1043,8 +1056,11 @@ char* Socket_getaddrname(struct sockaddr* sa, int sock)
 	/* strcpy(&addr_string[strlen(addr_string)], "what?"); */
 #else
 	struct sockaddr_in *sin = (struct sockaddr_in *)sa;
+	size_t buflen = sizeof(addr_string) - strlen(addr_string);
+
 	inet_ntop(sin->sin_family, &sin->sin_addr, addr_string, ADDRLEN);
-	sprintf(&addr_string[strlen(addr_string)], ":%d", ntohs(sin->sin_port));
+	if (snprintf(&addr_string[strlen(addr_string)], buflen, ":%d", ntohs(sin->sin_port)) >= buflen)
+		addr_string[sizeof(addr_string)-1] = '\0'; /* just in case of snprintf buffer filling */
 #endif
 	return addr_string;
 }

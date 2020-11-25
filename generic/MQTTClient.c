@@ -47,6 +47,10 @@
 #include <string.h>
 #if !defined(_WIN32) && !defined(_WIN64)
 	#include <sys/time.h>
+#else
+	#if defined(_MSC_VER) && _MSC_VER < 1900
+		#define snprintf _snprintf
+	#endif
 #endif
 
 #include "MQTTClient.h"
@@ -323,6 +327,7 @@ typedef struct
 	sem_type unsuback_sem;
 	MQTTPacket* pack;
 
+	unsigned long commandTimeout;
 } MQTTClients;
 
 struct props_rc_parms
@@ -437,6 +442,7 @@ int MQTTClient_createWithOptions(MQTTClient* handle, const char* serverURI, cons
 	}
 	*handle = m;
 	memset(m, '\0', sizeof(MQTTClients));
+	m->commandTimeout = 10000L;
 	if (strncmp(URI_TCP, serverURI, strlen(URI_TCP)) == 0)
 		serverURI += strlen(URI_TCP);
 	else if (strncmp(URI_WS, serverURI, strlen(URI_WS)) == 0)
@@ -806,7 +812,7 @@ static thread_return_type WINAPI MQTTClient_run(void* n)
 		Thread_lock_mutex(mqttclient_mutex);
 		if (tostop)
 			break;
-		timeout = 1000L;
+		timeout = 100L;
 
 		/* find client corresponding to socket */
 		if (ListFindItem(handles, &sock, clientSockCompare) == NULL)
@@ -1425,18 +1431,17 @@ exit:
 	return resp;
 }
 
-static int retryLoopInterval = 5;
 
-static void setRetryLoopInterval(int keepalive)
+static int retryLoopIntervalms = 5000;
+
+void setRetryLoopInterval(int keepalive)
 {
-	int proposed = keepalive / 10;
+	retryLoopIntervalms = (keepalive*1000) / 10;
 
-	if (proposed < 1)
-		proposed = 1;
-	else if (proposed > 5)
-		proposed = 5;
-	if (proposed < retryLoopInterval)
-		retryLoopInterval = proposed;
+	if (retryLoopIntervalms < 100)
+		retryLoopIntervalms = 100;
+	else if (retryLoopIntervalms  > 5000)
+		retryLoopIntervalms = 5000;
 }
 
 
@@ -1474,6 +1479,13 @@ static MQTTResponse MQTTClient_connectURI(MQTTClient handle, MQTTClient_connectO
 	if (options->struct_version >= 7)
 	{
 		m->c->net.httpHeaders = options->httpHeaders;
+	}
+	if (options->struct_version >= 8)
+	{
+		if (options->httpProxy)
+			m->c->httpProxy = MQTTStrdup(options->httpProxy);
+		if (options->httpsProxy)
+			m->c->httpsProxy = MQTTStrdup(options->httpsProxy);
 	}
 
 	if (m->c->will)
@@ -1694,7 +1706,7 @@ MQTTResponse MQTTClient_connectAll(MQTTClient handle, MQTTClient_connectOptions*
 		goto exit;
 	}
 
-	if (strncmp(options->struct_id, "MQTC", 4) != 0 || options->struct_version < 0 || options->struct_version > 7)
+	if (strncmp(options->struct_id, "MQTC", 4) != 0 || options->struct_version < 0 || options->struct_version > 8)
 	{
 		rc.reasonCode = MQTTCLIENT_BAD_STRUCTURE;
 		goto exit;
@@ -2005,7 +2017,7 @@ MQTTResponse MQTTClient_subscribeMany5(MQTTClient handle, int count, char* const
 		MQTTPacket* pack = NULL;
 
 		Thread_unlock_mutex(mqttclient_mutex);
-		pack = MQTTClient_waitfor(handle, SUBACK, &rc, 10000L);
+		pack = MQTTClient_waitfor(handle, SUBACK, &rc, m->commandTimeout);
 		Thread_lock_mutex(mqttclient_mutex);
 		if (pack != NULL)
 		{
@@ -2164,7 +2176,7 @@ MQTTResponse MQTTClient_unsubscribeMany5(MQTTClient handle, int count, char* con
 		MQTTPacket* pack = NULL;
 
 		Thread_unlock_mutex(mqttclient_mutex);
-		pack = MQTTClient_waitfor(handle, UNSUBACK, &rc, 10000L);
+		pack = MQTTClient_waitfor(handle, UNSUBACK, &rc, m->commandTimeout);
 		Thread_lock_mutex(mqttclient_mutex);
 		if (pack != NULL)
 		{
@@ -2453,7 +2465,7 @@ static void MQTTClient_retry(void)
 
 	FUNC_ENTRY;
 	now = MQTTTime_now();
-	if (MQTTTime_difftime(now, last) > (retryLoopInterval * 1000))
+	if (MQTTTime_difftime(now, last) >= (DIFF_TIME_TYPE)(retryLoopIntervalms))
 	{
 		last = MQTTTime_now();
 		MQTTProtocol_keepalive(now);
@@ -2478,17 +2490,19 @@ static MQTTPacket* MQTTClient_cycle(int* sock, ELAPSED_TIME_TYPE timeout, int* r
 		tp.tv_usec = (long)((timeout % 1000) * 1000); /* this field is microseconds! */
 	}
 
+	int rc1 = 0;
 #if defined(OPENSSL)
 	if ((*sock = SSLSocket_getPendingRead()) == -1)
 	{
-		/* 0 from getReadySocket indicates no work to do, -1 == error, but can happen normally */
+		/* 0 from getReadySocket indicates no work to do, rc -1 == error */
 #endif
-		*sock = Socket_getReadySocket(0, &tp, socket_mutex);
+		*sock = Socket_getReadySocket(0, &tp, socket_mutex, rc);
+		*rc = rc1;
 #if defined(OPENSSL)
 	}
 #endif
 	Thread_lock_mutex(mqttclient_mutex);
-	if (*sock > 0)
+	if (*sock > 0 && rc1 == 0)
 	{
 		MQTTClients* m = NULL;
 		if (ListFindItem(handles, sock, clientSockCompare) != NULL)
@@ -2864,6 +2878,21 @@ void MQTTClient_setTraceCallback(MQTTClient_traceCallback* callback)
 }
 
 
+int MQTTClient_setCommandTimeout(MQTTClient handle, unsigned long milliSeconds)
+{
+	int rc = MQTTCLIENT_SUCCESS;
+	MQTTClients* m = handle;
+
+	FUNC_ENTRY;
+	if (milliSeconds < 5000L)
+		rc = MQTTCLIENT_FAILURE;
+	else
+		m->commandTimeout = milliSeconds;
+	FUNC_EXIT_RC(rc);
+	return rc;
+}
+
+
 MQTTClient_nameValue* MQTTClient_getVersionInfo(void)
 {
 	#define MAX_INFO_STRINGS 8
@@ -2903,6 +2932,7 @@ MQTTClient_nameValue* MQTTClient_getVersionInfo(void)
 const char* MQTTClient_strerror(int code)
 {
   static char buf[30];
+  int chars = 0;
 
   switch (code) {
     case MQTTCLIENT_SUCCESS:
@@ -2937,7 +2967,12 @@ const char* MQTTClient_strerror(int code)
       return "Zero length will topic on connect";
   }
 
-  sprintf(buf, "Unknown error code %d", code);
+  chars = snprintf(buf, sizeof(buf), "Unknown error code %d", code);
+  if (chars >= sizeof(buf))
+  {
+	buf[sizeof(buf)-1] = '\0';
+	Log(LOG_ERROR, 0, "Error writing %d chars with snprintf", chars);
+  }
   return buf;
 }
 

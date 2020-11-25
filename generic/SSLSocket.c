@@ -82,6 +82,7 @@ static int tls_ex_index_ssl_opts;
 #if defined(_WIN32) || defined(_WIN64)
 #define iov_len len
 #define iov_base buf
+#define snprintf _snprintf
 #endif
 
 /**
@@ -284,7 +285,8 @@ char* SSLSocket_get_version_string(int version)
 
 	if (retstring == NULL)
 	{
-		sprintf(buf, "%i", version);
+		if (snprintf(buf, sizeof(buf), "%i", version) >= sizeof(buf))
+			buf[sizeof(buf)-1] = '\0'; /* just in case of snprintf buffer overflow */
 		retstring = buf;
 	}
 	return retstring;
