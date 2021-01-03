@@ -1,3 +1,8 @@
+2021-01-03  Danilo Chang
+
+    * Bump version to v0.12
+    * Update to paho.mqtt.c-1.3.8 files
+
 2020-11-25  Danilo Chang
 
     * Bump version to v0.11
