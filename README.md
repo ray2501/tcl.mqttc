@@ -65,6 +65,12 @@ below is an example:
     $ make
     $ make install
 
+Please notice, Paho MQTT C Client since v3.10 is to use the poll system call
+instead of select to monitor sockets.
+
+The poll does not exist on Windows XP. You can use the USE_SELECT compile
+definition to switch back to use select.
+
 
 Commands
 =====

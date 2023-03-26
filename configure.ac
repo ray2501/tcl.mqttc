@@ -87,6 +87,7 @@ TEA_ADD_SOURCES([tclmqttc.c
     Tree.c
     Socket.c
     Log.c
+    Proxy.c
     MQTTPersistence.c
     Thread.c
     MQTTProtocolOut.c
