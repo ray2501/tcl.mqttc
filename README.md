@@ -7,7 +7,7 @@ protocol, originally created by IBM and Arcom (later to become part of
 Eurotech) around 1998.
 
 This Tcl extension is based on 
-[Paho MQTT C Client](https://www.eclipse.org/paho/index.php?page=clients/c/index.php),
+[Paho MQTT C Client](https://eclipse-paho.github.io/paho.mqtt.c/MQTTClient/html/),
 but only support synchronous API and SSL/TLS support.
 
 I write this extension to research MQTT client.
