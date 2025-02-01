@@ -1033,7 +1033,6 @@ int SSLSocket_putdatas(SSL* ssl, SOCKET socket, char* buf0, size_t buf0len, Pack
 		free(iovec.iov_base);
 	else
 	{
-		int i;
 		free(buf0);
 		for (i = 0; i < bufs.count; ++i)
 		{

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2009, 2023 IBM Corp.
+ * Copyright (c) 2009, 2024 IBM Corp.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v2.0
@@ -246,6 +246,7 @@ int MQTTPacket_send_disconnect(Clients* client, enum MQTTReasonCodes reason, MQT
 
 void* MQTTPacket_publish(int MQTTVersion, unsigned char aHeader, char* data, size_t datalen);
 void MQTTPacket_freePublish(Publish* pack);
+int MQTTPacket_formatPayload(int buflen, char* buf, int payloadlen, char* payload);
 int MQTTPacket_send_publish(Publish* pack, int dup, int qos, int retained, networkHandles* net, const char* clientID);
 int MQTTPacket_send_puback(int MQTTVersion, int msgid, networkHandles* net, const char* clientID);
 void* MQTTPacket_ack(int MQTTVersion, unsigned char aHeader, char* data, size_t datalen);
