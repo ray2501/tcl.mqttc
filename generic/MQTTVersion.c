@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2012, 2020 IBM Corp.
+ * Copyright (c) 2012, 2025 IBM Corp.
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v2.0
@@ -26,7 +26,7 @@
 #include <ctype.h>
 #include "MQTTAsync.h"
 
-#if defined(_WIN32) || defined(_WIN64)
+#if defined(_WIN32)
 #include <windows.h>
 #include <tchar.h>
 #include <io.h>
@@ -96,7 +96,7 @@ char* FindString(char* filename, const char* eyecatcher_input)
 					char* ptr = value;
 					c = fgetc(infile); /* skip space */
 					c = fgetc(infile);
-					while (isprint(c))
+					while (isprint((unsigned char)c))
 					{
 						*ptr++ = c;
 						c = fgetc(infile);
@@ -138,7 +138,7 @@ int loadandcall(const char* libname)
 {
 	int rc = 0;
 	MQTTAsync_nameValue* (*func_address)(void) = NULL;
-#if defined(_WIN32) || defined(_WIN64)
+#if defined(_WIN32)
 	HMODULE APILibrary = LoadLibraryA(libname);
 	if (APILibrary == NULL)
 		printf("Error loading library %s, error code %d\n", libname, GetLastError());
@@ -202,7 +202,7 @@ int main(int argc, char** argv)
 		{
 #if defined(__CYGWIN__)
 			snprintf(namebuf, sizeof(namebuf), "cyg%s-1.dll", libraries[i]);
-#elif defined(_WIN32) || defined(_WIN64)
+#elif defined(_WIN32)
 			snprintf(namebuf, sizeof(namebuf), "%s.dll", libraries[i]);
 #elif defined(OSX)
 			snprintf(namebuf, sizeof(namebuf), "lib%s.1.dylib", libraries[i]);

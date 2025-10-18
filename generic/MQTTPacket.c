@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2009, 2024 IBM Corp. and Ian Craggs
+ * Copyright (c) 2009, 2025 IBM Corp. and Ian Craggs
  *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v2.0
@@ -860,7 +860,7 @@ int MQTTPacket_formatPayload(int buflen, char* buf, int payloadlen, char* payloa
 
 	for (i = 0; i < payloadlen; i++)
 	{
-		if (isprint(payload[i]))
+		if (isprint((unsigned char)payload[i]))
 		{
 			if (pos >= buflen)
 				break;
@@ -945,7 +945,7 @@ int MQTTPacket_send_publish(Publish* pack, int dup, int qos, int retained, netwo
 		memcpy(pack->mask, packetbufs.mask, sizeof(pack->mask));
 	}
 	{
-#if defined(_WIN32) || defined(_WIN64)
+#if defined(_WIN32)
 		#define buflen 30
 #else
 		const int buflen = 30;
