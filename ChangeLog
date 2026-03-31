@@ -1,5 +1,6 @@
 2026-03-31  Danilo Chang
 
+    * Bump version to v0.20
     * Update to paho.mqtt.c-1.3.16 files
 
 2025-10-18  Danilo Chang
